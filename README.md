@@ -24,6 +24,12 @@ inference.
 Эта прошивка работает на **ESP32-S3 Zero** (выделена красным на схеме ниже) в
 составе измерительной системы:
 
+|<img width="1068" height="402" alt="image_2026-02-16_02-04-44" src="https://github.com/user-attachments/assets/399917ac-9974-4cee-96f7-1ef3fc651c42" />|
+|-|
+
+<details>
+<summary>Исходный код диаграммы (Mermaid)</summary>
+
 ```mermaid
 ---
 config:
@@ -32,32 +38,32 @@ config:
 flowchart LR
     subgraph system1["Power Domain №1 - ИЗМЕРЯЕМАЯ СИСТЕМА"]
         direction TB
-        BAT1["18650~4V DC"]
-        TP1["TP4056защита"]
-        INA["INA219измерениеI2C addr 0x40"]
-        S3["ESP32-S3 Zero===> ЭТА ПРОШИВКА <===TFLite Micro / ESP-DLsleep modes"]
-        MIC["INMP441MEMS микрофонI2S slave"]
+        BAT1["18650<br>~4V DC"]
+        TP1["TP4056<br>защита"]
+        INA["INA219<br>измерение<br>I2C addr 0x40"]
+        S3["ESP32-S3 Zero<br>ЭТА ПРОШИВКА<br>TFLite Micro / ESP-DL<br>sleep modes"]
+        MIC["INMP441<br>MEMS микрофон<br>I2S slave"]
     end
 
     subgraph system2["Power Domain №2 - Логгер"]
         direction LR
-        BAT2["18650~4V DC"]
-        TP2["TP4056защита"]
-        C3["ESP32-C3 Miniсбор данныхUART/WiFi/BT"]
+        BAT2["18650<br>~4V DC"]
+        TP2["TP4056<br>защита"]
+        C3["ESP32-C3 Mini<br>сбор данных<br>UART/WiFi/BT"]
     end
 
     BAT1 --> TP1
     TP1 --> INA
     INA --> S3
-    MIC -->|I2S streamSD data| S3
-    S3 -->|SCK/WS clocks| MIC
-    S3 -.->|3.3V GND| MIC
+    MIC -->|"I2S streamSD data"| S3
+    S3 -->|"SCK/WS clocks"| MIC
+    S3 -.->|"3.3V GND"| MIC
 
     BAT2 --> TP2
     TP2 --> C3
-    INA <-->|"I2C<br>addr 0x40"| C3
+    INA <-- "I2Caddr 0x40" --> C3
 
-    C3 -->|USB-UARTWiFiBLE| PC["PCанализmatplotlib"]
+    C3 -->|"USB-UART<br>WiFi<br>BLE"| PC["PC<br>анализ<br>matplotlib"]
 
     BAT1:::powerDomain
     TP1:::powerDomain
@@ -75,6 +81,7 @@ flowchart LR
     classDef audio fill:#ffe1f0,stroke:#e91e63,stroke-width:2px
     classDef target fill:#ffcccc,stroke:#cc0000,stroke-width:4px,color:#000
 ```
+</details>
 
 **Примечание:** Прошивка работает автономно на ESP32-S3 с микрофоном. INA219 и
 ESP32-C3 используются только для измерения энергопотребления и не требуются для
