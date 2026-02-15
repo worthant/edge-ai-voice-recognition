@@ -55,7 +55,7 @@ flowchart LR
 
     BAT2 --> TP2
     TP2 --> C3
-    INA |I2Caddr 0x40| C3
+    INA <-->|"I2C<br>addr 0x40"| C3
 
     C3 -->|USB-UARTWiFiBLE| PC["PCанализmatplotlib"]
 
