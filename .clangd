@@ -1,0 +1,13 @@
+CompileFlags:
+  CompilationDatabase: .pio/build/esp32-s3-devkitc-1
+  Remove:
+    - "-mlongcalls"
+    - "-fstrict-volatile-bitfields"
+    - "-fno-shrink-wrap"
+    - "-fno-tree-switch-conversion"
+    - "-fno-jump-tables"
+    - "-fno-tree-switch-conversion"
+Diagnostics:
+  Suppress:
+    - unused-includes
+    - pp_file_not_found
