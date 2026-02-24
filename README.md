@@ -175,78 +175,112 @@ MultiNet — нейросеть для распознавания голосов
 
 ### Архитектура памяти чипа
 
-Полная карта адресного пространства ESP32-S3 (из официального Memory Map,
-Espressif):
+[Полная карта адресного пространства](./docs/esp32s3-mm.pdf) (официальный Memory
+Map, Espressif)
 
 ```mermaid
-block-beta
-  columns 3
+flowchart LR
+    CPU(["CPU\n240MHz"])
+    DMA(["GDMA"])
 
-  block:ibus["I-bus (исполнение кода)"]:1
-    ROM0["ROM0 256KB\n0x4000_0000"]
-    ROM1["ROM1 128KB\n0x3FF0_0000"]
-    SRAM0_I["SRAM0 32KB\nICache\n0x4037_0000"]
-    SRAM1_I["SRAM1 416KB\n0x4037_8000"]
-    RTCFAST_I["RTC FAST 8KB\n0x600F_E000"]
-    EXTFLASH_I["Ext. Flash/PSRAM\nICache 64KB блоки\n0x4200_0000"]
-  end
+    subgraph FLASH["NOR Flash 4MB — SPI0/1 — энергонезависимая"]
+        IROM["IROM\nкод .text\nчерез ICache"]
+        DROM["DROM\nконстанты .rodata\nчерез DCache"]
+    end
 
-  block:dbus["D-bus (данные, DMA)"]:1
-    SRAM1_D["SRAM1 416KB\nDMA access\n0x3FC8_8000"]
-    SRAM2_D["SRAM2 64KB\nDCache\n0x3FCF_0000"]
-    RTCSLOW_D["RTC SLOW 8KB\n0x5000_0000"]
-    RTCFAST_D["RTC FAST 8KB\n0x600F_E000"]
-    EXTMEM_D["Ext. Flash/PSRAM\nDCache 64KB блоки\n0x3C00_0000"]
-  end
+    subgraph SRAM["Internal SRAM 512KB — 1 такт, без кеша"]
+        IRAM["IRAM 192KB\nIRAM_ATTR\nISR, критичный код"]
+        DRAM["DRAM 320KB\nheap, стек задач\nDMA буферы I2S"]
+    end
 
-  block:periph["Периферия"]:1
-    I2S["I2S\n0x6000_F000"]
-    GDMA["GDMA\n0x6003_F000"]
-    SPI2["SPI2\n0x6002_4000"]
-    GPIO["GPIO\n0x6000_4000"]
-    USB["USB_JTAG\n0x6003_8000"]
-  end
+    subgraph RTC["RTC домен 16KB — переживает Deep Sleep"]
+        RTCF["RTC FAST 8KB\nRTC_IRAM_ATTR\nкод пробуждения"]
+        RTCS["RTC SLOW 8KB\nRTC_DATA_ATTR\nсостояние между sleep"]
+    end
+
+    subgraph EXT["PSRAM 2MB — SPI2 — медленнее, энергозависимая"]
+        PS["heap_caps SPIRAM\nвеса WakeNet 324KB\nбольшие буферы"]
+    end
+
+    CPU -- "cache miss → SPI чтение" --> FLASH
+    CPU -- "прямой доступ, 1 такт" --> SRAM
+    CPU -- "прямой доступ" --> RTC
+    CPU -- "через DCache" --> EXT
+    DMA -- "✓ только DRAM" --> DRAM
+    DMA -. "✗ недоступно" .-> PS
 ```
 
-**Как это соотносится с ESP-IDF и нашим кодом:**
+**ICache и DCache** — hardware кеши между CPU и внешней памятью (Flash, PSRAM).
+ICache (16–32KB) кеширует инструкции из Flash. DCache (32–64KB) кеширует данные
+из Flash и PSRAM. Работают по принципу set-associative: при обращении к адресу
+контроллер проверяет есть ли строка в кеше — cache hit значит данные уже в SRAM
+(быстро), cache miss значит нужно читать по SPI (медленно, ~10–40 тактов).
+Именно поэтому `IRAM_ATTR` убирает недетерминизм в ISR: код в IRAM минует кеш
+полностью.
 
-```mermaid
-flowchart TD
-    subgraph FLASH["NOR Flash — 4MB (энергонезависимая, SPI0/1)"]
-        IROM["IROM — код приложения\n.text секция\nисполняется через ICache"]
-        DROM["DROM — константы\n.rodata секция\nчитается через DCache"]
-    end
+**GDMA** (General-purpose DMA) — централизованный контроллер прямого доступа к
+памяти. Вместо отдельного DMA у каждой периферии, в ESP32-S3 один GDMA с
+несколькими каналами — через него ходят I2S, SPI, SDMMC. Смысл DMA: периферия
+пишет данные прямо в RAM без участия CPU, CPU получает прерывание только когда
+буфер заполнен. GDMA подключён к Internal SRAM по D-bus напрямую и физически не
+имеет доступа к SPI шине где сидит PSRAM — поэтому DMA буферы обязаны лежать в
+DRAM.
 
-    subgraph INT_SRAM["Internal SRAM — 512KB (1 такт доступа)"]
-        IRAM["IRAM — 192KB\n.iram секция\nIRAM_ATTR функции\nISR обработчики\nбез кеша — гарантированная латентность"]
-        DRAM["DRAM — 320KB\n.data + .bss секции\nheap (malloc)\nDMA буферы I2S\nстек FreeRTOS задач"]
-    end
+**Inference из PSRAM через DCache**: при старте WakeNet читает файлы весов из
+SPIFFS (NOR Flash) и копирует их в PSRAM через
+`heap_caps_malloc(MALLOC_CAP_SPIRAM)`. При каждом фрейме (16ms) нейронка читает
+веса из PSRAM — CPU идёт через DCache. Первое обращение к строке весов — cache
+miss, данные подгружаются по SPI2. Все последующие обращения к той же строке —
+cache hit, данные уже в кеше.
 
-    subgraph RTC["RTC домен — 16KB (переживает Deep Sleep)"]
-        RTCFAST["RTC FAST 8KB\nRTC_IRAM_ATTR\nкод пробуждения"]
-        RTCSLOW["RTC SLOW 8KB\nRTC_DATA_ATTR\nRTC_NOINIT_ATTR\nсостояние между sleep циклами"]
-    end
+| Тип           | Размер | Доступ CPU           | Энергозав. | DMA    | Deep Sleep | Атрибут в коде          |
+| ------------- | ------ | -------------------- | ---------- | ------ | ---------- | ----------------------- |
+| **ROM**       | 448KB  | 1 такт               | **да**     | нет    | —          | нет (read-only)         |
+| **IRAM**      | 192KB  | 1 такт, без кеша     | нет        | нет    | нет        | `IRAM_ATTR`             |
+| **DRAM**      | 320KB  | 1 такт, без кеша     | нет        | **да** | нет        | `DMA_ATTR`, `DRAM_ATTR` |
+| **RTC FAST**  | 8KB    | прямой               | нет        | нет    | **да**     | `RTC_IRAM_ATTR`         |
+| **RTC SLOW**  | 8KB    | прямой               | нет        | нет    | **да**     | `RTC_DATA_ATTR`         |
+| **NOR Flash** | 4MB    | через ICache/DCache  | **да**     | нет    | **да**     | нет (partition table)   |
+| **PSRAM**     | 2MB    | через DCache, ~40MHz | нет        | нет    | нет        | `EXT_RAM_BSS_ATTR`      |
 
-    subgraph EXT["Внешняя память (SPI2)"]
-        PSRAM["PSRAM — 2MB\nheap через MALLOC_CAP_SPIRAM\nвеса WakeNet ~324KB\nbig buffers"]
-    end
+> RTC FAST и RTC SLOW — два субрегиона единого RTC SRAM (16KB суммарно). FAST
+> доступен по I-bus (можно исполнять код), SLOW только по D-bus (только данные).
 
-    CPU -->|"cache miss → SPI чтение"| IROM
-    CPU -->|"cache miss → SPI чтение"| DROM
-    CPU -->|"прямой доступ, 1 такт"| IRAM
-    CPU -->|"прямой доступ, 1 такт"| DRAM
-    CPU -->|"через DCache"| PSRAM
-    DMA -->|"только DRAM!"| DRAM
-    DMA -.->|"нельзя напрямую"| PSRAM
+**Атрибуты размещения** — макросы которые переопределяют решение линкера о том
+куда положить переменную или функцию. По умолчанию линкер кладёт код в Flash
+(дёшево по RAM, но медленно при cache miss), константы туда же, данные в DRAM.
+Атрибут это явная инструкция "положи вот сюда". Пример: без `IRAM_ATTR` на ISR
+прерывание может подвиснуть на ~40 тактов пока Flash читается по SPI — для аудио
+обработки это недопустимо.
+
+```c
+// ISR без IRAM_ATTR — код в Flash, cache miss возможен
+void i2s_isr(void *arg) { ... }
+
+// ISR с IRAM_ATTR — код в IRAM, 1 такт гарантировано
+void IRAM_ATTR i2s_isr(void *arg) { ... }
+
+// DMA буфер — обязательно DRAM, иначе GDMA упадёт
+DMA_ATTR static int32_t i2s_rx_buf[512];
+
+// состояние между Deep Sleep циклами
+RTC_DATA_ATTR int wake_count = 0;
 ```
 
-**Что такое DMA и почему I2S требует DRAM:**
+**Для диплома по энергоэффективности:**
 
-DMA (Direct Memory Access) — контроллер который перекладывает данные между
-периферией и памятью без участия CPU. I2S при каждом сэмпле просит GDMA записать
-данные прямо в RAM. GDMA физически не умеет работать с PSRAM — у него нет
-доступа к внешней SPI шине, только к Internal SRAM. Поэтому DMA буферы I2S
-обязаны лежать в DRAM:
+- **RTC SLOW** — счётчики пробуждений и флаги состояния переживут Deep Sleep
+- **IRAM** — `IRAM_ATTR` на inference loop убирает cache miss и делает время
+  выполнения фрейма предсказуемым — важно для точных замеров потребления
+- **Deep Sleep** — всё кроме RTC домена обесточивается; PSRAM (и веса WakeNet)
+  теряются, при пробуждении нужна повторная инициализация esp-sr
+
+**Почему I2S требует DRAM:**
+
+I2S при каждом сэмпле просит GDMA записать данные прямо в RAM. GDMA физически не
+умеет работать с PSRAM — у него нет доступа к внешней SPI шине, только к
+Internal SRAM. Поэтому любой буфер который I2S/SPI/SDMMC читает через DMA должен
+лежать в DRAM:
 
 ```c
 // правильно — статический DMA буфер в DRAM
@@ -256,39 +290,8 @@ DMA_ATTR static int32_t i2s_buf[512];
 int32_t *buf = heap_caps_malloc(512 * 4, MALLOC_CAP_SPIRAM);
 ```
 
-В sdkconfig зарезервировано 32KB internal RAM специально под DMA нужды esp-sr и
-I2S (`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768`).
-
-**Ключевые атрибуты размещения:**
-
-| Атрибут            | Где размещает      | Когда использовать                                          |
-| ------------------ | ------------------ | ----------------------------------------------------------- |
-| `IRAM_ATTR`        | IRAM               | ISR, timing-critical код без cache miss                     |
-| `DRAM_ATTR`        | DRAM               | константы внутри IRAM функций (иначе линкер кладёт в Flash) |
-| `DMA_ATTR`         | DRAM, word-aligned | буферы для SPI/I2S/SDMMC DMA                                |
-| `RTC_DATA_ATTR`    | RTC SLOW           | переменные переживающие Deep Sleep                          |
-| `RTC_IRAM_ATTR`    | RTC FAST           | код запуска после Deep Sleep                                |
-| `EXT_RAM_BSS_ATTR` | PSRAM              | большие нулевые буферы во внешней RAM                       |
-
-| Тип       | Размер | Скорость | Энергозав. | DMA | Deep Sleep |
-| --------- | ------ | -------- | ---------- | --- | ---------- |
-| IRAM      | 192KB  | 240MHz   | нет        | нет | нет        |
-| DRAM      | 320KB  | 240MHz   | нет        | да  | нет        |
-| RTC SRAM  | 16KB   | ~80MHz   | нет        | нет | **да** ✓   |
-| ROM       | 448KB  | 240MHz   | —          | нет | —          |
-| NOR Flash | 4MB    | ~80MHz\* | **да** ✓   | нет | **да** ✓   |
-| PSRAM     | 2MB    | ~40MHz   | нет        | нет | нет        |
-
-\* Flash читается через кеш — при cache hit скорость выше.
-
-**Для диплома:**
-
-- **RTC SRAM** — единственное место для хранения состояния между Deep Sleep
-  циклами (счётчики пробуждений, флаги)
-- **DRAM** нужна для DMA буферов I2S — I2S не работает с PSRAM напрямую, поэтому
-  32KB зарезервировано в sdkconfig
-- **WakeNet** при старте копирует веса из Flash (~400KB) в PSRAM, inference
-  работает из PSRAM
+В sdkconfig зарезервировано 32KB internal RAM под DMA нужды esp-sr и I2S:
+`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768`.
 
 ### Разметка Flash и partition table
 
