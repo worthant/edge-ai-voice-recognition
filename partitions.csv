@@ -1,0 +1,8 @@
+# Name,     Type,  SubType,  Offset,    Size
+# ---------------------------------------------------
+# 0x00000 - bootloader (for s3/c3; for older - 0x1000)
+# 0x08000 - partition table
+# ---------------------------------------------------
+nvs,        data,  nvs,      0x9000,    0x6000
+factory,    app,   factory,  0x10000,   900K
+model,      data,  spiffs,   0xF1000,   600K
