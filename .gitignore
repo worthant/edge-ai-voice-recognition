@@ -4,3 +4,4 @@
 .ccls
 compile_commands.json
 *.old
+managed_components
