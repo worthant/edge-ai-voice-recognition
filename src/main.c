@@ -11,6 +11,7 @@
 #include "portmacro.h"
 #include <math.h>
 #include <stdio.h>
+#include "esp_wn_iface.h"
 
 static const char *TAG = "main";
 
