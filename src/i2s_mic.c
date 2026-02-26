@@ -1,10 +1,12 @@
 #include "i2s_mic.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "portmacro.h"
+#include <stdint.h>
 
 static const char *TAG = "i2s_mic";
 static i2s_chan_handle_t rx_hdl;
@@ -82,4 +84,23 @@ void i2s_mic_demo(void) {
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+}
+
+esp_err_t i2s_mic_read_s16(int16_t *buf, size_t samples, size_t *samples_read) {
+    // read samples*2 int32 (L+R alternation), grab only L
+    static int32_t raw[I2S_MIC_CHUNK_SAMPLES * 2];
+
+    size_t bytes_read = 0;
+    esp_err_t ret =
+        i2s_mic_read(raw, samples * 2 * sizeof(int32_t), &bytes_read);
+
+    if (ret == ESP_OK) {
+        int n = bytes_read / sizeof(int32_t);
+        int out = 0;
+        for (int i = 0; i < n; i += 2) { // step 2, grab only L
+            buf[out++] = (int16_t)(raw[i] >> 12);
+        }
+        *samples_read = out;
+    }
+    return ret;
 }

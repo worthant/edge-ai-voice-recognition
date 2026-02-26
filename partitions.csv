@@ -5,4 +5,4 @@
 # ---------------------------------------------------
 nvs,        data,  nvs,      0x9000,    0x6000
 factory,    app,   factory,  0x10000,   900K
-model,      data,  spiffs,   0xF1000,   600K
+model,      data,  spiffs,   0xF1000,   1138K

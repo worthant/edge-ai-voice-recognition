@@ -13,3 +13,4 @@
 esp_err_t i2s_mic_init(void);
 esp_err_t i2s_mic_read(int32_t *buf, size_t buf_sz, size_t *bytes_read);
 void i2s_mic_demo(void);
+esp_err_t i2s_mic_read_s16(int16_t *buf, size_t samples, size_t *samples_read);
