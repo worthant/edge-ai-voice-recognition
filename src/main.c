@@ -4,6 +4,7 @@
 #include "esp_wn_iface.h"
 #include "esp_wn_models.h"
 #include "i2s_mic.h"
+#include "led_strip.h"
 #include "model_path.h"
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,62 @@
 static const char *TAG = "main";
 
 #define WN_MAX_MODELS 8
+#define LED_GPIO 21
+
+// rgb led hdl
+static led_strip_handle_t led_hdl;
+
+const uint8_t model_colors[WN_MAX_MODELS][3] = {
+    {255, 0, 0},   // 0: red
+    {0, 255, 0},   // 1: green
+    {0, 0, 255},   // 2: blue
+    {128, 0, 255}, // 4: violet
+    {0, 255, 255}, // 5: cyan
+    {255, 128, 0}, // 6: orange
+    {255, 255, 0}, // 7: yellow
+    {255, 0, 255}, // 8: purple
+};
+
+static void init_led(void) {
+    led_strip_config_t strip_config = {
+        .strip_gpio_num =
+            LED_GPIO,  // The GPIO that connected to the LED strip's data line
+        .max_leds = 1, // The number of LEDs in the strip,
+        .led_model =
+            LED_MODEL_WS2812, // LED strip model, it determines the bit timing
+        .color_component_format =
+            LED_STRIP_COLOR_COMPONENT_FMT_GRB, // The color component format is
+                                               // G-R-B
+        .flags = {
+            .invert_out = false, // don't invert the output signal
+        }};
+
+    /// RMT backend specific configuration
+    led_strip_rmt_config_t rmt_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,    // different clock source can lead to
+                                           // different power consumption
+        .resolution_hz = 10 * 1000 * 1000, // RMT counter clock frequency: 10MHz
+        .mem_block_symbols =
+            64, // the memory size of each RMT channel, in words (4 bytes)
+        .flags = {
+            .with_dma =
+                false, // DMA feature is available on chips like ESP32-S3/P4
+        }};
+    ESP_ERROR_CHECK(
+        led_strip_new_rmt_device(&strip_config, &rmt_config, &led_hdl));
+    led_strip_clear(led_hdl); // Turn off on start
+}
+
+static void blink_led(int model_idx) {
+    int idx = model_idx % WN_MAX_MODELS;
+    led_strip_set_pixel(led_hdl, 0, model_colors[idx][0], model_colors[idx][1],
+                        model_colors[idx][2]);
+    led_strip_refresh(led_hdl);
+
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    led_strip_clear(led_hdl);
+}
 
 typedef struct {
     const esp_wn_iface_t *ops;
@@ -140,12 +197,15 @@ static void wakenet_loop(wakenet *wn) {
             char *word =
                 wn->models[m].ops->get_word_name(wn->models[m].model, ch + 1);
             ESP_LOGW(TAG, ">>> DETECTED: '%s' <<<", word ? word : "unknown");
+            blink_led(m);
         }
     }
 }
 
 void app_main(void) {
     ESP_LOGI(TAG, "start");
+
+    init_led();
 
     static wakenet wn;
     ESP_ERROR_CHECK(setup_wakenet(&wn));
