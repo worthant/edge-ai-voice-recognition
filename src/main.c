@@ -25,5 +25,7 @@ void app_main(void) {
         ESP_LOGI(TAG, "cold boot → sleep");
     }
 
-    vad_sleep_enter();
+    vad_sleep_enter(false);
 }
+
+// void app_main(void) { vad_sleep_enter_bare_led(); }
