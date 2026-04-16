@@ -7,6 +7,8 @@ tf.data.Dataset pipeline для Speech Commands v2.
 
 MFCC реализация — через tf.signal, параметры согласованы с config.py и
 повторяются 1:1 в C++ реализации на ESP32.
+
+Совместимо с TensorFlow 2.14 — 2.19+.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ def _time_shift(audio: tf.Tensor) -> tf.Tensor:
     return padded[start : start + config.CLIP_SAMPLES]
 
 
-def _load_bg_noises() -> list[np.ndarray]:
+def _load_bg_noises_numpy() -> list[np.ndarray]:
     """Читает все WAV из _background_noise_ как numpy float32."""
     bg_dir = config.DATASET_ROOT / config.BG_NOISE_SUBDIR
     if not bg_dir.exists():
@@ -75,40 +77,60 @@ def _load_bg_noises() -> list[np.ndarray]:
     return out
 
 
-_BG_CACHE: list[tf.Tensor] = []
+# ---------------------------------------------------------------------------
+# Фоновый шум: один склеенный тензор + таблица смещений.
+# Это позволяет избежать tf.switch_case с замыканиями на eager-тензоры,
+# что ломается в TF 2.16+ при трассировке графа внутри ds.map().
+# ---------------------------------------------------------------------------
+_BG_CONCAT: tf.Tensor | None = None  # [total_samples] float32
+_BG_OFFSETS: tf.Tensor | None = None  # [N, 2]  каждая строка = (start, length)
+_BG_READY = False
 
 
-def _get_bg_noise_tensors() -> list[tf.Tensor]:
-    global _BG_CACHE
-    if _BG_CACHE:
-        return _BG_CACHE
-    arrays = _load_bg_noises()
+def _ensure_bg_noise() -> None:
+    """Один раз склеивает все фоновые шумы в единый тензор."""
+    global _BG_CONCAT, _BG_OFFSETS, _BG_READY
+    if _BG_READY:
+        return
+
+    arrays = _load_bg_noises_numpy()
     if not arrays:
         print("[dataset] WARNING: _background_noise_ не найден, silence будет нулями")
-        return []
-    _BG_CACHE = [tf.constant(a, dtype=tf.float32) for a in arrays]
-    return _BG_CACHE
+        _BG_READY = True
+        return
+
+    offsets: list[tuple[int, int]] = []
+    pos = 0
+    for a in arrays:
+        offsets.append((pos, len(a)))
+        pos += len(a)
+
+    _BG_CONCAT = tf.constant(np.concatenate(arrays), dtype=tf.float32)
+    _BG_OFFSETS = tf.constant(offsets, dtype=tf.int32)
+
+    total_mb = _BG_CONCAT.shape[0] * 4 / (1024 * 1024)
+    print(
+        f"[dataset] bg noise: {len(arrays)} файлов, "
+        f"{_BG_CONCAT.shape[0]} samples ({total_mb:.1f} MB), склеено в один тензор"
+    )
+    _BG_READY = True
 
 
 def _random_bg_slice() -> tf.Tensor:
     """Случайный кусок из случайного фонового файла длиной CLIP_SAMPLES."""
-    bgs = _get_bg_noise_tensors()
-    if not bgs:
+    if _BG_CONCAT is None or _BG_OFFSETS is None:
         return tf.zeros([config.CLIP_SAMPLES], dtype=tf.float32)
-    idx = tf.random.uniform([], 0, len(bgs), dtype=tf.int32)
 
-    # tf.switch_case для выбора тензора переменной длины
-    def _pick(i):
-        def _f():
-            return bgs[i]
+    n_files = tf.shape(_BG_OFFSETS)[0]
+    idx = tf.random.uniform([], 0, n_files, dtype=tf.int32)
+    file_start = _BG_OFFSETS[idx, 0]
+    file_len = _BG_OFFSETS[idx, 1]
 
-        return _f
+    max_offset = tf.maximum(file_len - config.CLIP_SAMPLES, 1)
+    offset = tf.random.uniform([], 0, max_offset, dtype=tf.int32)
 
-    bg = tf.switch_case(idx, {i: _pick(i) for i in range(len(bgs))})
-    bg_len = tf.shape(bg)[0]
-    max_start = tf.maximum(bg_len - config.CLIP_SAMPLES, 1)
-    start = tf.random.uniform([], 0, max_start, dtype=tf.int32)
-    return bg[start : start + config.CLIP_SAMPLES]
+    start = file_start + offset
+    return _BG_CONCAT[start : start + config.CLIP_SAMPLES]
 
 
 def _mix_bg_noise(audio: tf.Tensor) -> tf.Tensor:
@@ -206,7 +228,7 @@ def build_dataset(
     shuffle_buffer: int = 2000,
 ) -> tf.data.Dataset:
     paths, labels, is_silence = _load_manifest(manifest_path)
-    _get_bg_noise_tensors()  # прогреваем кэш в main-процессе
+    _ensure_bg_noise()  # прогреваем кэш в main-процессе
 
     ds = tf.data.Dataset.from_tensor_slices((paths, labels, is_silence))
 
