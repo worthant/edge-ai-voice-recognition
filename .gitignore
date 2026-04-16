@@ -5,3 +5,9 @@
 compile_commands.json
 *.old
 managed_components
+.venv
+__pycache__
+*.pyc
+*results
+!*results/comparison.md
+*logs
