@@ -158,6 +158,39 @@ def _augment(audio: tf.Tensor, is_silence: tf.Tensor) -> tf.Tensor:
 
     return tf.cond(is_silence, silence_branch, normal_branch)
 
+def _spec_augment(mfcc: tf.Tensor) -> tf.Tensor:
+    """
+    SpecAugment: аугментации на уровне MFCC-"картинки".
+    Заменяет audio-level аугментации (time shift, noise mixing),
+    которые невозможны после предвычисления MFCC.
+
+    Два типа масок:
+    - Time mask: обнулить 1-5 случайных фреймов подряд (как будто часть слова пропала)
+    - Frequency mask: обнулить 1-2 случайных MFCC-коэффициента (как будто часть частот пропала)
+    """
+    # Time mask: обнулить t случайных последовательных фреймов
+    t = tf.random.uniform([], 1, 6, dtype=tf.int32)         # от 1 до 5 фреймов
+    t0 = tf.random.uniform([], 0, config.NUM_FRAMES - t, dtype=tf.int32)
+    # Создаём маску: 1 везде, 0 в зоне маскирования
+    mask_t = tf.concat([
+        tf.ones([t0, config.NUM_MFCC]),
+        tf.zeros([t, config.NUM_MFCC]),
+        tf.ones([config.NUM_FRAMES - t0 - t, config.NUM_MFCC]),
+    ], axis=0)
+    mfcc = mfcc * mask_t
+
+    # Frequency mask: обнулить f случайных коэффициентов
+    f = tf.random.uniform([], 1, 3, dtype=tf.int32)         # от 1 до 2 коэффициентов
+    f0 = tf.random.uniform([], 0, config.NUM_MFCC - f, dtype=tf.int32)
+    mask_f = tf.concat([
+        tf.ones([config.NUM_FRAMES, f0]),
+        tf.zeros([config.NUM_FRAMES, f]),
+        tf.ones([config.NUM_FRAMES, config.NUM_MFCC - f0 - f]),
+    ], axis=1)
+    mfcc = mfcc * mask_f
+
+    return mfcc
+
 
 # ============================================================================
 # MFCC
@@ -250,10 +283,66 @@ def build_dataset(
         return mfcc, label_oh
 
     ds = ds.map(_parse, num_parallel_calls=AUTOTUNE)
+
+    # Для val/test: кешируем в RAM после первого прохода.
+    # MFCC без аугментаций одинаковый каждую эпоху — нет смысла считать заново.
+    if not training:
+        ds = ds.cache()
+
     ds = ds.batch(batch_size, drop_remainder=training)
     ds = ds.prefetch(AUTOTUNE)
     return ds
 
+
+# быстрый пайплайн из предвычисленного кэша
+CACHE_DIR = config.DATA_DIR / "cache"
+def build_dataset_cached(
+    split_name: str,
+    batch_size: int,
+    training: bool,
+    shuffle_buffer: int = 2000,
+) -> tf.data.Dataset:
+    """
+    Быстрый dataset из предвычисленного .npz кэша.
+
+    Вместо: WAV с диска → аугментация → MFCC (6 мс/пример)
+    Делает:  MFCC из RAM → SpecAugment маски (0.03 мс/пример)
+
+    Ускорение: ~200× на data pipeline, общее обучение ~10× быстрее.
+    """
+    cache_path = CACHE_DIR / f"{split_name}_mfcc.npz"
+    if not cache_path.exists():
+        raise FileNotFoundError(
+            f"Нет кэша {cache_path}. Запустите: python precompute_mfcc.py"
+        )
+
+    data = np.load(cache_path)
+    mfccs = data["mfccs"]    # (N, 49, 10) float32
+    labels = data["labels"]  # (N,) int32
+    print(f"[dataset] loaded cache: {split_name} — {len(mfccs)} samples from {cache_path}")
+
+    ds = tf.data.Dataset.from_tensor_slices((mfccs, labels))
+
+    if training:
+        ds = ds.shuffle(shuffle_buffer, seed=config.SEED, reshuffle_each_iteration=True)
+
+    def _parse_cached(mfcc, label):
+        # mfcc: (49, 10), label: int32
+        if training:
+            mfcc = _spec_augment(mfcc)
+
+        mfcc = tf.expand_dims(mfcc, axis=-1)  # (49, 10, 1) — добавляем канал
+        label_oh = tf.one_hot(label, depth=config.NUM_CLASSES)
+        return mfcc, label_oh
+
+    ds = ds.map(_parse_cached, num_parallel_calls=AUTOTUNE)
+
+    if not training:
+        ds = ds.cache()  # val/test — кэш после первого прохода
+
+    ds = ds.batch(batch_size, drop_remainder=training)
+    ds = ds.prefetch(AUTOTUNE)
+    return ds
 
 def count_examples(manifest_path: Path) -> int:
     return len(pd.read_csv(manifest_path))

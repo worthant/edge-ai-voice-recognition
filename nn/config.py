@@ -26,8 +26,7 @@ TENSORBOARD_DIR = LOG_DIR / "tensorboard"
 for d in [CHECKPOINT_DIR, MODEL_DIR, LOG_DIR, PLOT_DIR, TENSORBOARD_DIR, MANIFEST_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-FP32_H5 = MODEL_DIR / "ds_cnn_fp32.h5"
-FP32_SAVEDMODEL = MODEL_DIR / "ds_cnn_fp32_saved_model"
+FP32_KERAS = MODEL_DIR / "ds_cnn_fp32.keras"
 PTQ_TFLITE = MODEL_DIR / "ds_cnn_ptq_int8.tflite"
 QAT_TFLITE = MODEL_DIR / "ds_cnn_qat_int8.tflite"
 
@@ -76,7 +75,7 @@ UNKNOWN_PERCENTAGE = 10.0  # %
 TIME_SHIFT_MS = 100  # ± 100 мс
 TIME_SHIFT_SAMPLES = SAMPLE_RATE * TIME_SHIFT_MS // 1000  # = 1600
 
-BG_NOISE_PROB = 0.8  # вероятность подмешать фон в training пример
+BG_NOISE_PROB = 0.7  # вероятность подмешать фон в training пример
 BG_NOISE_VOLUME_MAX = 0.1  # амплитуда фонового шума (доля от сигнала)
 
 # ============================================================================
@@ -92,13 +91,14 @@ LABEL_SMOOTHING = 0.1
 
 # ============================================================================
 # DS-CNN (вариант S из Hello Edge)
+# модификация: увеличил модель для увеличения точности, вариант M
 # ============================================================================
 DS_CNN_CONFIG = {
-    "first_conv_filters": 64,
+    "first_conv_filters": 172,
     "first_conv_kernel": (10, 4),
     "first_conv_stride": (2, 2),
-    "num_ds_blocks": 4,
-    "ds_filters": 64,
+    "num_ds_blocks": 6,
+    "ds_filters": 172,
     "ds_kernel": (3, 3),
 }
 

@@ -4,7 +4,7 @@
 - Adam + cosine decay LR
 - L2 regularization + label smoothing
 - CSV + TensorBoard logging
-- Сохранение в .h5 и SavedModel
+- Сохранение в .keras (нативный Keras 3 формат)
 - На финале печатает test accuracy, confusion matrix, размер модели
 """
 
@@ -20,7 +20,7 @@ import numpy as np
 import tensorflow as tf
 
 import config
-from data.dataset import build_dataset, count_examples
+from data.dataset import build_dataset, build_dataset_cached, count_examples
 from models.ds_cnn import build_ds_cnn
 from utils.metrics import (
     accuracy_pct,
@@ -68,15 +68,9 @@ def main() -> None:
     n_test = count_examples(config.MANIFEST_DIR / "test.csv")
     print(f"[train] examples: train={n_train} val={n_val} test={n_test}")
 
-    train_ds = build_dataset(
-        config.MANIFEST_DIR / "train.csv", config.BATCH_SIZE, training=True
-    )
-    val_ds = build_dataset(
-        config.MANIFEST_DIR / "val.csv", config.BATCH_SIZE, training=False
-    )
-    test_ds = build_dataset(
-        config.MANIFEST_DIR / "test.csv", config.BATCH_SIZE, training=False
-    )
+    train_ds = build_dataset_cached("train", config.BATCH_SIZE, training=True)
+    val_ds = build_dataset_cached("val", config.BATCH_SIZE, training=False)
+    test_ds = build_dataset_cached("test", config.BATCH_SIZE, training=False)
 
     steps_per_epoch = max(1, n_train // config.BATCH_SIZE)
     lr = _build_lr_schedule(steps_per_epoch)
@@ -92,14 +86,16 @@ def main() -> None:
         metrics=[tf.keras.metrics.CategoricalAccuracy(name="acc")],
     )
 
+    best_ckpt_path = config.CHECKPOINT_DIR / "ds_cnn_best.keras"
+
     csv_logger = tf.keras.callbacks.CSVLogger(
         str(config.LOG_DIR / "train.csv"), append=False
     )
     tb_logger = tf.keras.callbacks.TensorBoard(
         log_dir=str(config.TENSORBOARD_DIR), histogram_freq=0
     )
-    ckpt = tf.keras.callbacks.ModelCheckpoint(
-        filepath=str(config.CHECKPOINT_DIR / "ds_cnn_best.h5"),
+    checkpt = tf.keras.callbacks.ModelCheckpoint(
+        filepath=str(best_ckpt_path),  # FIX: используем ту же переменную
         monitor="val_acc",
         mode="max",
         save_best_only=True,
@@ -111,26 +107,22 @@ def main() -> None:
         train_ds,
         validation_data=val_ds,
         epochs=config.EPOCHS,
-        callbacks=[csv_logger, tb_logger, ckpt],
+        callbacks=[csv_logger, tb_logger, checkpt],
         verbose=2,
     )
 
-    # Возвращаем лучшие веса
-    best_ckpt = config.CHECKPOINT_DIR / "ds_cnn_best.h5"
-    if best_ckpt.exists():
-        model = tf.keras.models.load_model(best_ckpt, compile=False)
+    if best_ckpt_path.exists():
+        model = tf.keras.models.load_model(str(best_ckpt_path), compile=False)
         model.compile(
             optimizer="adam",
             loss=tf.keras.losses.CategoricalCrossentropy(from_logits=True),
             metrics=[tf.keras.metrics.CategoricalAccuracy(name="acc")],
         )
+        print(f"[train] restored best model from {best_ckpt_path}")
 
-    # Сохраняем финальные артефакты
-    model.save(str(config.FP32_H5))
-    tf.saved_model.save(model, str(config.FP32_SAVEDMODEL))
-    size_kb = config.FP32_H5.stat().st_size / 1024.0
-    print(f"[train] saved: {config.FP32_H5} ({size_kb:.1f} KB)")
-    print(f"[train] saved: {config.FP32_SAVEDMODEL}")
+    model.save(str(config.FP32_KERAS))
+    size_kb = config.FP32_KERAS.stat().st_size / 1024.0
+    print(f"[train] saved: {config.FP32_KERAS} ({size_kb:.1f} KB)")
 
     # Оценка на test
     print("[train] eval on test...")
@@ -157,7 +149,7 @@ def main() -> None:
         title=f"FP32 — test acc {acc:.2f}%",
     )
 
-    # мини-сводка в отдельный CSV
+    # мини-сводка
     with open(config.LOG_DIR / "final_fp32.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["metric", "value"])
