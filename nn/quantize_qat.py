@@ -27,23 +27,29 @@ from utils.metrics import (
 
 
 def _load_fp32_model() -> tf.keras.Model:
-    """Загружает FP32 модель. Пробует .keras, потом чекпоинт, потом .h5."""
-    if config.FP32_KERAS.exists():
-        return tf.keras.models.load_model(str(config.FP32_KERAS), compile=False)
-
-    ckpt = config.CHECKPOINT_DIR / "ds_cnn_best.keras"
-    if ckpt.exists():
-        return tf.keras.models.load_model(str(ckpt), compile=False)
-
+    """
+    Загружает FP32 модель: пересобирает архитектуру из кода + грузит веса.
+    Это обходит баг десериализации .keras на TF 2.19, где load_model()
+    падает на 'No module named tf_keras.src.models.functional'.
+    """
     from models.ds_cnn import build_ds_cnn
 
     model = build_ds_cnn()
-    h5 = config.MODEL_DIR / "ds_cnn_fp32.h5"
-    if h5.exists():
-        model.load_weights(str(h5))
-        return model
 
-    print("[qat] ERROR: не найдена модель", file=sys.stderr)
+    # Пробуем источники весов по приоритету
+    weight_sources = [
+        config.FP32_KERAS,  # .keras (полная модель)
+        config.CHECKPOINT_DIR / "ds_cnn_best.keras",  # чекпоинт
+        config.MODEL_DIR / "ds_cnn_fp32.h5",  # legacy .h5
+    ]
+
+    for src in weight_sources:
+        if src.exists():
+            model.load_weights(str(src))
+            print(f"[qat] загружены веса из {src}")
+            return model
+
+    print("[qat] ERROR: не найдены веса модели", file=sys.stderr)
     sys.exit(1)
 
 
