@@ -1,13 +1,16 @@
 """
 Quantization-Aware Training (QAT) INT8.
 
-- Оборачивает FP32 Keras-модель в fake-quant через tfmot
-- Дообучает 10 эпох на том же датасете
-- Конвертирует в TFLite INT8 (I/O тоже int8)
-- Сравнивает с PTQ и FP32
+ВАЖНО: TF_USE_LEGACY_KERAS=1 обязателен, потому что tfmot 0.8.0
+написан под tf_keras (Keras 2) и не понимает модели Keras 3.
+Эта переменная должна быть установлена ДО любого import tensorflow.
 """
 
 from __future__ import annotations
+
+import os
+
+os.environ["TF_USE_LEGACY_KERAS"] = "1"  # ДО импорта TF!
 
 import sys
 from pathlib import Path
@@ -18,6 +21,7 @@ import tensorflow_model_optimization as tfmot
 
 import config
 from data.dataset import build_dataset
+from models.ds_cnn import build_ds_cnn
 from utils.metrics import (
     accuracy_pct,
     per_class_accuracy,
@@ -28,26 +32,29 @@ from utils.metrics import (
 
 def _load_fp32_model() -> tf.keras.Model:
     """
-    Загружает FP32 модель: пересобирает архитектуру из кода + грузит веса.
-    Это обходит баг десериализации .keras на TF 2.19, где load_model()
-    падает на 'No module named tf_keras.src.models.functional'.
-    """
-    from models.ds_cnn import build_ds_cnn
+    Пересобирает модель + грузит веса из .weights.h5.
 
+    В режиме TF_USE_LEGACY_KERAS=1 tf.keras = tf_keras (Keras 2).
+    build_ds_cnn() создаст tf_keras модель, которую tfmot понимает.
+    .weights.h5 — универсальный формат весов, работает и в Keras 2 и 3.
+    """
     model = build_ds_cnn()
 
-    # Пробуем источники весов по приоритету
     weight_sources = [
-        config.FP32_KERAS,  # .keras (полная модель)
+        config.MODEL_DIR / "ds_cnn_fp32.weights.h5",  # портабельные веса
         config.CHECKPOINT_DIR / "ds_cnn_best.keras",  # чекпоинт
-        config.MODEL_DIR / "ds_cnn_fp32.h5",  # legacy .h5
+        config.FP32_KERAS,  # полная модель
     ]
 
     for src in weight_sources:
         if src.exists():
-            model.load_weights(str(src))
-            print(f"[qat] загружены веса из {src}")
-            return model
+            try:
+                model.load_weights(str(src))
+                print(f"[qat] загружены веса из {src}")
+                return model
+            except Exception as e:
+                print(f"[qat] не удалось загрузить {src}: {e}")
+                continue
 
     print("[qat] ERROR: не найдены веса модели", file=sys.stderr)
     sys.exit(1)
@@ -102,7 +109,6 @@ def main() -> None:
         ),
         metrics=[tf.keras.metrics.CategoricalAccuracy(name="acc")],
     )
-    qat_model.summary()
 
     train_ds = build_dataset(
         config.MANIFEST_DIR / "train.csv", config.QAT_BATCH_SIZE, training=True
@@ -124,7 +130,6 @@ def main() -> None:
         verbose=2,
     )
 
-    # Конвертация
     print("[qat] конвертация QAT → TFLite INT8...")
     converter = tf.lite.TFLiteConverter.from_keras_model(qat_model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
@@ -137,17 +142,14 @@ def main() -> None:
     qat_size_kb = len(tflite) / 1024.0
     print(f"[qat] сохранено: {config.QAT_TFLITE} ({qat_size_kb:.1f} KB)")
 
-    # Eval
     y_true, y_pred = _eval_tflite(config.QAT_TFLITE)
     qat_acc = accuracy_pct(y_true, y_pred)
 
-    # PTQ для сравнения (если есть)
     ptq_acc = None
     if config.PTQ_TFLITE.exists():
         yt, yp = _eval_tflite(config.PTQ_TFLITE)
         ptq_acc = accuracy_pct(yt, yp)
 
-    # FP32 для сравнения
     test_ds = build_dataset(
         config.MANIFEST_DIR / "test.csv", config.BATCH_SIZE, training=False
     )
