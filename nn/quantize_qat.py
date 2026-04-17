@@ -26,6 +26,27 @@ from utils.metrics import (
 )
 
 
+def _load_fp32_model() -> tf.keras.Model:
+    """Загружает FP32 модель. Пробует .keras, потом чекпоинт, потом .h5."""
+    if config.FP32_KERAS.exists():
+        return tf.keras.models.load_model(str(config.FP32_KERAS), compile=False)
+
+    ckpt = config.CHECKPOINT_DIR / "ds_cnn_best.keras"
+    if ckpt.exists():
+        return tf.keras.models.load_model(str(ckpt), compile=False)
+
+    from models.ds_cnn import build_ds_cnn
+
+    model = build_ds_cnn()
+    h5 = config.MODEL_DIR / "ds_cnn_fp32.h5"
+    if h5.exists():
+        model.load_weights(str(h5))
+        return model
+
+    print("[qat] ERROR: не найдена модель", file=sys.stderr)
+    sys.exit(1)
+
+
 def _representative_dataset_gen():
     ds = build_dataset(config.MANIFEST_DIR / "train.csv", batch_size=1, training=False)
     count = 0
@@ -51,8 +72,7 @@ def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
     y_true: list[int] = []
     y_pred: list[int] = []
     for xb, yb in test_ds:
-        x = xb.numpy()
-        x_q = np.round(x / in_scale + in_zp).astype(np.int8)
+        x_q = np.round(xb.numpy() / in_scale + in_zp).astype(np.int8)
         interp.set_tensor(in_det["index"], x_q)
         interp.invoke()
         out = interp.get_tensor(out_det["index"]).astype(np.float32)
@@ -63,15 +83,8 @@ def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def main() -> None:
-    if not config.FP32_H5.exists():
-        print(
-            f"[qat] ERROR: нет {config.FP32_H5}. Сначала запустите train.py",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
     print("[qat] загрузка FP32 модели...")
-    fp32_model = tf.keras.models.load_model(config.FP32_H5, compile=False)
+    fp32_model = _load_fp32_model()
 
     print("[qat] применяю quantize_model (fake-quant)...")
     qat_model = tfmot.quantization.keras.quantize_model(fp32_model)
@@ -105,8 +118,8 @@ def main() -> None:
         verbose=2,
     )
 
-    # Конвертация в TFLite INT8
-    print("[qat] конвертация QAT модели -> TFLite INT8...")
+    # Конвертация
+    print("[qat] конвертация QAT → TFLite INT8...")
     converter = tf.lite.TFLiteConverter.from_keras_model(qat_model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.representative_dataset = _representative_dataset_gen
@@ -115,39 +128,38 @@ def main() -> None:
     converter.inference_output_type = tf.int8
     tflite = converter.convert()
     config.QAT_TFLITE.write_bytes(tflite)
-    size_kb = len(tflite) / 1024.0
-    print(f"[qat] сохранено: {config.QAT_TFLITE} ({size_kb:.1f} KB)")
+    qat_size_kb = len(tflite) / 1024.0
+    print(f"[qat] сохранено: {config.QAT_TFLITE} ({qat_size_kb:.1f} KB)")
 
-    # Оценка
+    # Eval
     y_true, y_pred = _eval_tflite(config.QAT_TFLITE)
     qat_acc = accuracy_pct(y_true, y_pred)
 
-    # PTQ для сравнения (если существует)
+    # PTQ для сравнения (если есть)
     ptq_acc = None
     if config.PTQ_TFLITE.exists():
         yt, yp = _eval_tflite(config.PTQ_TFLITE)
         ptq_acc = accuracy_pct(yt, yp)
 
     # FP32 для сравнения
-    t_ds = build_dataset(
+    test_ds = build_dataset(
         config.MANIFEST_DIR / "test.csv", config.BATCH_SIZE, training=False
     )
-    yt, yp = [], []
-    for xb, yb in t_ds:
+    yt_fp32, yp_fp32 = [], []
+    for xb, yb in test_ds:
         logits = fp32_model(xb, training=False).numpy()
-        yt.extend(np.argmax(yb.numpy(), axis=-1).tolist())
-        yp.extend(np.argmax(logits, axis=-1).tolist())
-    fp32_acc = accuracy_pct(np.asarray(yt), np.asarray(yp))
+        yt_fp32.extend(np.argmax(yb.numpy(), axis=-1).tolist())
+        yp_fp32.extend(np.argmax(logits, axis=-1).tolist())
+    fp32_acc = accuracy_pct(np.asarray(yt_fp32), np.asarray(yp_fp32))
 
-    print("\n=== Сравнение ===")
+    print(f"\n{'='*50}")
     print(f"FP32 baseline:   {fp32_acc:.2f} %")
     if ptq_acc is not None:
-        print(f"PTQ  INT8:       {ptq_acc:.2f} %  (drop {fp32_acc - ptq_acc:+.2f})")
-    print(f"QAT  INT8:       {qat_acc:.2f} %  (drop {fp32_acc - qat_acc:+.2f})")
-    print(f"QAT  size:       {size_kb:.1f} KB")
+        print(f"PTQ INT8:        {ptq_acc:.2f} %  (drop {fp32_acc - ptq_acc:+.2f})")
+    print(f"QAT INT8:        {qat_acc:.2f} %  (drop {fp32_acc - qat_acc:+.2f})")
+    print(f"QAT size:        {qat_size_kb:.1f} KB")
+    print(f"{'='*50}")
 
-    for k, v in per_class_accuracy(y_true, y_pred).items():
-        print(f"  {k:>12s}: {v*100:.2f} %")
     print_classification_report(y_true, y_pred)
     plot_confusion_matrix(
         y_true,
