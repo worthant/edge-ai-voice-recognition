@@ -20,7 +20,7 @@ import tensorflow as tf
 import tensorflow_model_optimization as tfmot
 
 import config
-from data.dataset import build_dataset
+from data.dataset import build_dataset_cached
 from models.ds_cnn import build_ds_cnn
 from utils.metrics import (
     accuracy_pct,
@@ -61,7 +61,7 @@ def _load_fp32_model() -> tf.keras.Model:
 
 
 def _representative_dataset_gen():
-    ds = build_dataset(config.MANIFEST_DIR / "train.csv", batch_size=1, training=False)
+    ds = build_dataset_cached("train", batch_size=1, training=False)
     count = 0
     for xb, _ in ds:
         yield [tf.cast(xb, tf.float32)]
@@ -78,9 +78,7 @@ def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
     in_scale, in_zp = in_det["quantization"]
     out_scale, out_zp = out_det["quantization"]
 
-    test_ds = build_dataset(
-        config.MANIFEST_DIR / "test.csv", batch_size=1, training=False
-    )
+    test_ds = build_dataset_cached("test", batch_size=1, training=False)
 
     y_true: list[int] = []
     y_pred: list[int] = []
@@ -110,12 +108,8 @@ def main() -> None:
         metrics=[tf.keras.metrics.CategoricalAccuracy(name="acc")],
     )
 
-    train_ds = build_dataset(
-        config.MANIFEST_DIR / "train.csv", config.QAT_BATCH_SIZE, training=True
-    )
-    val_ds = build_dataset(
-        config.MANIFEST_DIR / "val.csv", config.QAT_BATCH_SIZE, training=False
-    )
+    train_ds = build_dataset_cached("train", config.QAT_BATCH_SIZE, training=True)
+    val_ds = build_dataset_cached("val", config.QAT_BATCH_SIZE, training=False)
 
     csv_logger = tf.keras.callbacks.CSVLogger(
         str(config.LOG_DIR / "qat.csv"), append=False
@@ -150,9 +144,8 @@ def main() -> None:
         yt, yp = _eval_tflite(config.PTQ_TFLITE)
         ptq_acc = accuracy_pct(yt, yp)
 
-    test_ds = build_dataset(
-        config.MANIFEST_DIR / "test.csv", config.BATCH_SIZE, training=False
-    )
+    test_ds = build_dataset_cached("test", config.BATCH_SIZE, training=False)
+
     yt_fp32, yp_fp32 = [], []
     for xb, yb in test_ds:
         logits = fp32_model(xb, training=False).numpy()

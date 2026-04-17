@@ -15,7 +15,7 @@ import numpy as np
 import tensorflow as tf
 
 import config
-from data.dataset import build_dataset
+from data.dataset import build_dataset_cached
 from utils.metrics import (
     accuracy_pct,
     per_class_accuracy,
@@ -53,7 +53,7 @@ def _load_fp32_model() -> tf.keras.Model:
 
 def _representative_dataset_gen():
     """500 примеров из train для калибровки квантизации."""
-    ds = build_dataset(config.MANIFEST_DIR / "train.csv", batch_size=1, training=False)
+    ds = build_dataset_cached("train", batch_size=1, training=False)
     count = 0
     for xb, _ in ds:
         yield [tf.cast(xb, tf.float32)]
@@ -71,9 +71,7 @@ def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
     in_scale, in_zp = in_det["quantization"]
     out_scale, out_zp = out_det["quantization"]
 
-    test_ds = build_dataset(
-        config.MANIFEST_DIR / "test.csv", batch_size=1, training=False
-    )
+    test_ds = build_dataset_cached("test", batch_size=1, training=False)
 
     y_true: list[int] = []
     y_pred: list[int] = []
@@ -111,9 +109,7 @@ def main() -> None:
     ptq_acc = accuracy_pct(y_true, y_pred)
 
     # FP32 accuracy для сравнения
-    test_ds = build_dataset(
-        config.MANIFEST_DIR / "test.csv", config.BATCH_SIZE, training=False
-    )
+    test_ds = build_dataset_cached("test", batch_size=1, training=False)
     yt_fp32, yp_fp32 = [], []
     for xb, yb in test_ds:
         logits = model(xb, training=False).numpy()
