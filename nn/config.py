@@ -106,7 +106,7 @@ DS_CNN_CONFIG = {
 # Quantization
 # ============================================================================
 PTQ_REPRESENTATIVE_SAMPLES = 500
-QAT_EPOCHS = 10
+QAT_EPOCHS = 25
 QAT_LEARNING_RATE = 1e-4
 QAT_BATCH_SIZE = 100
 

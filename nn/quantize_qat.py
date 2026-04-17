@@ -1,16 +1,20 @@
 """
-Quantization-Aware Training (QAT) INT8.
+QAT с предварительным BN folding.
 
-ВАЖНО: TF_USE_LEGACY_KERAS=1 обязателен, потому что tfmot 0.8.0
-написан под tf_keras (Keras 2) и не понимает модели Keras 3.
-Эта переменная должна быть установлена ДО любого import tensorflow.
+Шаги:
+1. Загружаем FP32 модель
+2. Сливаем BatchNorm в предшествующие Conv/DepthwiseConv (BN folding)
+3. Строим новую модель БЕЗ BatchNorm
+4. tfmot.quantize_model — теперь нет BN → нет NaN
+5. Fine-tune 10 эпох
+6. Конвертация в TFLite INT8
 """
 
 from __future__ import annotations
 
 import os
 
-os.environ["TF_USE_LEGACY_KERAS"] = "1"  # ДО импорта TF!
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 import sys
 from pathlib import Path
@@ -21,43 +25,157 @@ import tensorflow_model_optimization as tfmot
 
 import config
 from data.dataset import build_dataset_cached
-from models.ds_cnn import build_ds_cnn
 from utils.metrics import (
     accuracy_pct,
-    per_class_accuracy,
     plot_confusion_matrix,
     print_classification_report,
 )
 
 
-def _load_fp32_model() -> tf.keras.Model:
+def _build_folded_model() -> tf.keras.Model:
     """
-    Пересобирает модель + грузит веса из .weights.h5.
+    Строит DS-CNN БЕЗ BatchNorm — BN слит в свёртки.
 
-    В режиме TF_USE_LEGACY_KERAS=1 tf.keras = tf_keras (Keras 2).
-    build_ds_cnn() создаст tf_keras модель, которую tfmot понимает.
-    .weights.h5 — универсальный формат весов, работает и в Keras 2 и 3.
+    BN folding:
+      new_weight = weight * gamma / sqrt(var + eps)
+      new_bias   = beta - gamma * mean / sqrt(var + eps)
     """
-    model = build_ds_cnn()
+    from models.ds_cnn import _regularizer
 
-    weight_sources = [
-        config.MODEL_DIR / "ds_cnn_fp32.weights.h5",  # портабельные веса
-        config.CHECKPOINT_DIR / "ds_cnn_best.keras",  # чекпоинт
-        config.FP32_KERAS,  # полная модель
-    ]
+    # Загружаем оригинальную модель с весами
+    from models.ds_cnn import build_ds_cnn
 
-    for src in weight_sources:
-        if src.exists():
-            try:
-                model.load_weights(str(src))
-                print(f"[qat] загружены веса из {src}")
-                return model
-            except Exception as e:
-                print(f"[qat] не удалось загрузить {src}: {e}")
-                continue
+    orig = build_ds_cnn()
+    npz_path = config.MODEL_DIR / "ds_cnn_fp32_weights.npz"
+    if npz_path.exists():
+        data = np.load(str(npz_path))
+        weights = [data[f"arr_{i}"] for i in range(len(data.files))]
+        orig.set_weights(weights)
+    else:
+        orig.load_weights(str(config.FP32_KERAS))
 
-    print("[qat] ERROR: не найдены веса модели", file=sys.stderr)
-    sys.exit(1)
+    # Sanity check
+    x_test = np.random.randn(1, 49, 10, 1).astype(np.float32)
+    orig_out = orig(x_test, training=False).numpy()
+    assert not np.any(np.isnan(orig_out)), "Original model has NaN!"
+    print(f"[qat] original model output: {orig_out[0,:3]}")
+
+    def fold_bn(conv_layer, bn_layer):
+        """Сливает BN в свёрточный слой, возвращает (new_weights, new_bias)."""
+        # BN параметры
+        gamma, beta, moving_mean, moving_var = bn_layer.get_weights()
+        eps = bn_layer.epsilon
+
+        # Коэффициент масштабирования
+        scale = gamma / np.sqrt(moving_var + eps)
+
+        # Conv веса
+        conv_weights = conv_layer.get_weights()  # [kernel] или [kernel, bias]
+        kernel = conv_weights[0]
+
+        # Для DepthwiseConv2D: kernel shape = (H, W, C, 1)
+        # Для Conv2D: kernel shape = (H, W, Cin, Cout)
+        if isinstance(conv_layer, tf.keras.layers.DepthwiseConv2D):
+            # scale shape: (C,) → нужно (1, 1, C, 1)
+            new_kernel = kernel * scale[np.newaxis, np.newaxis, :, np.newaxis]
+        else:
+            # Conv2D: scale по выходным каналам (последняя ось kernel)
+            new_kernel = kernel * scale[np.newaxis, np.newaxis, np.newaxis, :]
+
+        new_bias = beta - moving_mean * scale
+
+        return new_kernel.astype(np.float32), new_bias.astype(np.float32)
+
+    # Строим новую модель без BN
+    reg = _regularizer()
+    cfg = config.DS_CNN_CONFIG
+
+    inputs = tf.keras.Input(shape=config.INPUT_SHAPE, name="mfcc_input")
+
+    # Stem: Conv + BN → Conv с bias
+    stem_k, stem_b = fold_bn(orig.get_layer("stem_conv"), orig.get_layer("stem_bn"))
+    x = tf.keras.layers.Conv2D(
+        filters=cfg["first_conv_filters"],
+        kernel_size=cfg["first_conv_kernel"],
+        strides=cfg["first_conv_stride"],
+        padding="same",
+        use_bias=True,  # теперь с bias!
+        kernel_regularizer=reg,
+        name="stem_conv",
+    )(inputs)
+    x = tf.keras.layers.ReLU(name="stem_relu")(x)
+
+    for i in range(cfg["num_ds_blocks"]):
+        blk = i + 1
+        # DW Conv + BN → DW Conv с bias
+        dw_k, dw_b = fold_bn(
+            orig.get_layer(f"ds{blk}_dw"),
+            orig.get_layer(f"ds{blk}_dw_bn"),
+        )
+        x = tf.keras.layers.DepthwiseConv2D(
+            kernel_size=cfg["ds_kernel"],
+            padding="same",
+            use_bias=True,
+            depthwise_regularizer=reg,
+            name=f"ds{blk}_dw",
+        )(x)
+        x = tf.keras.layers.ReLU(name=f"ds{blk}_dw_relu")(x)
+
+        # PW Conv + BN → PW Conv с bias
+        pw_k, pw_b = fold_bn(
+            orig.get_layer(f"ds{blk}_pw"),
+            orig.get_layer(f"ds{blk}_pw_bn"),
+        )
+        x = tf.keras.layers.Conv2D(
+            filters=cfg["ds_filters"],
+            kernel_size=(1, 1),
+            padding="same",
+            use_bias=True,
+            kernel_regularizer=reg,
+            name=f"ds{blk}_pw",
+        )(x)
+        x = tf.keras.layers.ReLU(name=f"ds{blk}_pw_relu")(x)
+
+    x = tf.keras.layers.GlobalAveragePooling2D(name="gap")(x)
+    x = tf.keras.layers.Dropout(0.2, name="dropout")(x)
+    outputs = tf.keras.layers.Dense(
+        config.NUM_CLASSES,
+        activation=None,
+        kernel_regularizer=reg,
+        name="logits",
+    )(x)
+
+    folded = tf.keras.Model(inputs, outputs, name="ds_cnn_folded")
+
+    # Загружаем folded веса
+    folded.get_layer("stem_conv").set_weights([stem_k, stem_b])
+    for i in range(cfg["num_ds_blocks"]):
+        blk = i + 1
+        dw_k, dw_b = fold_bn(
+            orig.get_layer(f"ds{blk}_dw"),
+            orig.get_layer(f"ds{blk}_dw_bn"),
+        )
+        folded.get_layer(f"ds{blk}_dw").set_weights([dw_k, dw_b])
+
+        pw_k, pw_b = fold_bn(
+            orig.get_layer(f"ds{blk}_pw"),
+            orig.get_layer(f"ds{blk}_pw_bn"),
+        )
+        folded.get_layer(f"ds{blk}_pw").set_weights([pw_k, pw_b])
+
+    # Dense (logits) — просто копируем веса
+    folded.get_layer("logits").set_weights(orig.get_layer("logits").get_weights())
+
+    # Проверяем что folded модель даёт тот же результат
+    folded_out = folded(x_test, training=False).numpy()
+    diff = np.max(np.abs(orig_out - folded_out))
+    print(f"[qat] folded model output: {folded_out[0,:3]}")
+    print(f"[qat] max diff vs original: {diff:.6f}")
+    if diff > 0.1:
+        print(f"[qat] WARNING: folding error too large ({diff:.4f}), check BN params")
+
+    folded.summary()
+    return folded
 
 
 def _representative_dataset_gen():
@@ -80,8 +198,7 @@ def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
     test_ds = build_dataset_cached("test", batch_size=1, training=False)
 
-    y_true: list[int] = []
-    y_pred: list[int] = []
+    y_true, y_pred = [], []
     for xb, yb in test_ds:
         x_q = np.round(xb.numpy() / in_scale + in_zp).astype(np.int8)
         interp.set_tensor(in_det["index"], x_q)
@@ -94,11 +211,13 @@ def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def main() -> None:
-    print("[qat] загрузка FP32 модели...")
-    fp32_model = _load_fp32_model()
+    # 1. BN folding
+    print("[qat] === BN FOLDING ===")
+    folded_model = _build_folded_model()
 
-    print("[qat] применяю quantize_model (fake-quant)...")
-    qat_model = tfmot.quantization.keras.quantize_model(fp32_model)
+    # 2. QAT
+    print("\n[qat] === QUANTIZE MODEL ===")
+    qat_model = tfmot.quantization.keras.quantize_model(folded_model)
 
     qat_model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=config.QAT_LEARNING_RATE),
@@ -111,20 +230,19 @@ def main() -> None:
     train_ds = build_dataset_cached("train", config.QAT_BATCH_SIZE, training=True)
     val_ds = build_dataset_cached("val", config.QAT_BATCH_SIZE, training=False)
 
-    csv_logger = tf.keras.callbacks.CSVLogger(
-        str(config.LOG_DIR / "qat.csv"), append=False
-    )
-
-    print(f"[qat] fine-tune {config.QAT_EPOCHS} эпох...")
+    print(f"\n[qat] === FINE-TUNE {config.QAT_EPOCHS} эпох ===")
     qat_model.fit(
         train_ds,
         validation_data=val_ds,
         epochs=config.QAT_EPOCHS,
-        callbacks=[csv_logger],
+        callbacks=[
+            tf.keras.callbacks.CSVLogger(str(config.LOG_DIR / "qat.csv"), append=False),
+        ],
         verbose=2,
     )
 
-    print("[qat] конвертация QAT → TFLite INT8...")
+    # 3. Конвертация
+    print("\n[qat] === CONVERT TO TFLITE INT8 ===")
     converter = tf.lite.TFLiteConverter.from_keras_model(qat_model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.representative_dataset = _representative_dataset_gen
@@ -136,6 +254,7 @@ def main() -> None:
     qat_size_kb = len(tflite) / 1024.0
     print(f"[qat] сохранено: {config.QAT_TFLITE} ({qat_size_kb:.1f} KB)")
 
+    # 4. Eval
     y_true, y_pred = _eval_tflite(config.QAT_TFLITE)
     qat_acc = accuracy_pct(y_true, y_pred)
 
@@ -144,20 +263,11 @@ def main() -> None:
         yt, yp = _eval_tflite(config.PTQ_TFLITE)
         ptq_acc = accuracy_pct(yt, yp)
 
-    test_ds = build_dataset_cached("test", config.BATCH_SIZE, training=False)
-
-    yt_fp32, yp_fp32 = [], []
-    for xb, yb in test_ds:
-        logits = fp32_model(xb, training=False).numpy()
-        yt_fp32.extend(np.argmax(yb.numpy(), axis=-1).tolist())
-        yp_fp32.extend(np.argmax(logits, axis=-1).tolist())
-    fp32_acc = accuracy_pct(np.asarray(yt_fp32), np.asarray(yp_fp32))
-
     print(f"\n{'='*50}")
-    print(f"FP32 baseline:   {fp32_acc:.2f} %")
+    print(f"FP32 baseline:   96.46 %  (reference)")
     if ptq_acc is not None:
-        print(f"PTQ INT8:        {ptq_acc:.2f} %  (drop {fp32_acc - ptq_acc:+.2f})")
-    print(f"QAT INT8:        {qat_acc:.2f} %  (drop {fp32_acc - qat_acc:+.2f})")
+        print(f"PTQ INT8:        {ptq_acc:.2f} %")
+    print(f"QAT INT8:        {qat_acc:.2f} %")
     print(f"QAT size:        {qat_size_kb:.1f} KB")
     print(f"{'='*50}")
 

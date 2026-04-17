@@ -19,7 +19,8 @@ import numpy as np
 import tensorflow as tf
 
 import config
-from data.dataset import build_dataset
+from data.dataset import build_dataset_cached
+from models.ds_cnn import build_ds_cnn
 from utils.metrics import (
     accuracy_pct,
     plot_confusion_matrix,
@@ -36,11 +37,25 @@ def _time_ms(fn, warmup: int, runs: int) -> float:
     return (elapsed / runs) * 1000.0
 
 
-def _eval_fp32(model_path: Path) -> tuple[float, float, np.ndarray, np.ndarray]:
-    model = tf.keras.models.load_model(model_path, compile=False)
-    test_ds = build_dataset(
-        config.MANIFEST_DIR / "test.csv", config.BATCH_SIZE, training=False
-    )
+def _load_fp32_model() -> tf.keras.Model:
+    """Загружает FP32 модель через build + load_weights (TF 2.19 safe)."""
+    model = build_ds_cnn()
+    npz_path = config.MODEL_DIR / "ds_cnn_fp32_weights.npz"
+    if npz_path.exists():
+        data = np.load(str(npz_path))
+        weights = [data[f"arr_{i}"] for i in range(len(data.files))]
+        model.set_weights(weights)
+    elif config.FP32_KERAS.exists():
+        model.load_weights(str(config.FP32_KERAS))
+    elif (config.CHECKPOINT_DIR / "ds_cnn_best.keras").exists():
+        model.load_weights(str(config.CHECKPOINT_DIR / "ds_cnn_best.keras"))
+    else:
+        return None
+    return model
+
+
+def _eval_fp32(model: tf.keras.Model) -> tuple[float, float, np.ndarray, np.ndarray]:
+    test_ds = build_dataset_cached("test", config.BATCH_SIZE, training=False)
 
     y_true: list[int] = []
     y_pred: list[int] = []
@@ -55,7 +70,6 @@ def _eval_fp32(model_path: Path) -> tuple[float, float, np.ndarray, np.ndarray]:
     y_true_np, y_pred_np = np.asarray(y_true), np.asarray(y_pred)
     acc = accuracy_pct(y_true_np, y_pred_np)
 
-    # latency
     @tf.function
     def _inf(x):
         return model(x, training=False)
@@ -77,9 +91,7 @@ def _eval_tflite(model_path: Path) -> tuple[float, float, np.ndarray, np.ndarray
     in_scale, in_zp = in_det["quantization"]
     out_scale, out_zp = out_det["quantization"]
 
-    test_ds = build_dataset(
-        config.MANIFEST_DIR / "test.csv", batch_size=1, training=False
-    )
+    test_ds = build_dataset_cached("test", batch_size=1, training=False)
 
     y_true: list[int] = []
     y_pred: list[int] = []
@@ -118,16 +130,19 @@ def main() -> None:
     rows: list[dict] = []
 
     # FP32
-    if config.FP32_H5.exists():
+    fp32_model = _load_fp32_model()
+    if fp32_model is not None:
         print("[compare] FP32...")
-        acc, lat, yt, yp = _eval_fp32(config.FP32_H5)
-        size_kb = config.FP32_H5.stat().st_size / 1024.0
+        acc, lat, yt, yp = _eval_fp32(fp32_model)
+        # Размер берём от .keras файла
+        fp32_file = config.FP32_KERAS
+        size_kb = fp32_file.stat().st_size / 1024.0 if fp32_file.exists() else 0
         plot_confusion_matrix(
             yt, yp, config.PLOT_DIR / "cm_fp32_compare.png", f"FP32 ({acc:.2f}%)"
         )
         rows.append({"name": "FP32", "acc": acc, "size_kb": size_kb, "lat_ms": lat})
     else:
-        print("[compare] FP32 модель отсутствует, пропускаю")
+        print("[compare] FP32 модель не найдена, пропускаю")
 
     # PTQ
     if config.PTQ_TFLITE.exists():
@@ -204,7 +219,6 @@ def main() -> None:
     out.write_text("\n".join(lines))
     print(f"[compare] -> {out}")
 
-    # Также в stdout
     print("\n" + "\n".join(lines))
 
 
