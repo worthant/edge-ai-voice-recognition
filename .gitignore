@@ -8,6 +8,6 @@ managed_components
 .venv
 __pycache__
 *.pyc
-*results
-!*results/comparison.md
+nn/results/*
+!nn/results/kws_results.zip
 *logs

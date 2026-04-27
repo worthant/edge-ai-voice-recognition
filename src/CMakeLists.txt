@@ -14,4 +14,5 @@ FILE(
 idf_component_register(
   SRCS ${app_sources} 
   REQUIRES ${requires}
+  INCLUDE_DIRS "."
 )

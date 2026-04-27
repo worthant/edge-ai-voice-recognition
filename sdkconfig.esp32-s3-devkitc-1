@@ -554,6 +554,15 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# ESP-NN
+#
+# CONFIG_NN_ANSI_C is not set
+CONFIG_NN_OPTIMIZED=y
+CONFIG_NN_OPTIMIZATIONS=1
+# CONFIG_NN_SKIP_NUDGE is not set
+# end of ESP-NN
+
+#
 # ESP Speech Recognition
 #
 CONFIG_MODEL_IN_FLASH=y
