@@ -18,7 +18,7 @@
 
 static const char *TAG = "ve_kws";
 
-#define KWS_THRESHOLD 0.5f
+#define KWS_THRESHOLD 2.0f
 
 static mfcc_ctx_t *mfcc_ctx;
 static int16_t *audio_buf;
