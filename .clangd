@@ -1,6 +1,7 @@
 CompileFlags:
   CompilationDatabase: .pio/build/esp32-s3-devkitc-1
   Add:
+    - "-DUSE_CUSTOM_KWS=1"
     - "-I/home/boris/.platformio/packages/framework-espidf/components/esp_driver_i2s/include"
     - "-I/home/boris/.platformio/packages/framework-espidf/components/esp_timer/include"
   Remove:

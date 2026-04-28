@@ -1,31 +1,43 @@
+/*
+ * main.c — ESP32-S3 voice recognition
+ *
+ * Two modes (compile-time):
+ *   USE_CUSTOM_KWS=1  → DS-CNN with TFLite Micro (our model)
+ *   USE_CUSTOM_KWS=0  → WakeNet9 via esp-sr (Espressif proprietary)
+ *
+ * Both use the same wake-from-sleep + I2S mic infrastructure.
+ */
 #include "esp_log.h"
 #include "i2s_mic.h"
 #include "vad_sleep.h"
-#include "wakenet.h"
+#include "voice_engine.h"
 #include "ws2812_led.h"
+#include "selftest.h"
 
 static const char *TAG = "main";
 
-static void on_detect(int model_idx, const char *word) {
-    ws2812_blink_model(model_idx);
+static void on_detect(int idx, const char *word) {
+    ESP_LOGW(TAG, ">>> DETECTED: %s <<<", word);
+    ws2812_blink_model(idx);
 }
 
 void app_main(void) {
     ESP_ERROR_CHECK(ws2812_init());
 
-    if (vad_sleep_wakeup_by_sound()) {
-        ESP_LOGI(TAG, "sound wakeup → inference");
-        ESP_ERROR_CHECK(i2s_mic_init());
+    //selftest_run();  /* does nothing unless built with -DRUN_SELFTEST=1 */
 
-        static wakenet_t wn;
-        ESP_ERROR_CHECK(wakenet_init(&wn));
-        wakenet_run_window(&wn, 3000, on_detect);
-        wakenet_deinit(&wn);
-    } else {
-        ESP_LOGI(TAG, "cold boot → sleep");
-    }
+    // if (!vad_sleep_wakeup_by_sound()) {
+    //     ESP_LOGI(TAG, "cold boot → sleep");
+    //     vad_sleep_enter(true);
+    //     return;
+    // }
 
-    vad_sleep_enter(false);
+    ESP_LOGI(TAG, "sound wakeup → inference");
+    ESP_ERROR_CHECK(i2s_mic_init());
+    ESP_ERROR_CHECK(voice_engine_init());
+
+    voice_engine_run(3000000, on_detect);
+
+    voice_engine_deinit();
+    vad_sleep_enter(true);
 }
-
-// void app_main(void) { vad_sleep_enter_bare_led(); }

@@ -1,4 +1,10 @@
 dependencies:
+  espressif/cjson:
+    component_hash: e788323270d90738662d66fffa910bfe1fba019bba087f01557e70c40485b469
+    source:
+      service_url: https://api.components.espressif.com/
+      type: service
+    version: 1.7.19~2
   espressif/dl_fft:
     component_hash: 7dadbd644c0d7ba4733cc3726ec4cff6edf27b043725e1115861dec1609a3d28
     source:
@@ -6,11 +12,11 @@ dependencies:
       type: service
     version: 0.3.1
   espressif/esp-dsp:
-    component_hash: 42dce32d46ac93dc11f60d368e29a830e9661c7345d794b8a45c343479cae636
+    component_hash: 12e44db246517a627bc0fe2b255b8335410c0215c98bfba2df5a8e3edea839ef
     source:
       service_url: https://api.components.espressif.com/
       type: service
-    version: 1.7.0
+    version: 1.8.0
   espressif/esp-nn:
     component_hash: e98a7dd3dfde460b1b4ca982e2ebae0b4831719a8e4659d19c145943deaf682b
     source:
@@ -18,11 +24,11 @@ dependencies:
       type: service
     version: 1.2.3
   espressif/esp-sr:
-    component_hash: 46b1f70f8b561714b958d1c455213cca07162755d1b8df53498081199f15136f
+    component_hash: 91f54718b22328546502ed96c6b2e53033cb90d83a3fd87bc60d0b27a7cc841a
     source:
       service_url: https://api.components.espressif.com/
       type: service
-    version: 2.3.1
+    version: 2.4.2
   espressif/esp-tflite-micro:
     component_hash: 57aa3889d3c7b7a513f716c2cb8707476a5bf42971d63a6f6d38a5616d862e57
     source:
@@ -40,6 +46,6 @@ dependencies:
     source:
       type: idf
     version: 5.4.0
-manifest_hash: 79d476328b56664906cdf39af7d3891e0cd84509f79800ee39c5e8044ec218cf
+manifest_hash: c4dcf61002f3cf6b6432328adefaf910e379e11bcb66115df220ec8a7e228353
 target: esp32s3
 version: 1.0.0
