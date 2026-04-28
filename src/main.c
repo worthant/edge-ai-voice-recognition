@@ -8,11 +8,12 @@
  * Both use the same wake-from-sleep + I2S mic infrastructure.
  */
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "i2s_mic.h"
 #include "vad_sleep.h"
 #include "voice_engine.h"
 #include "ws2812_led.h"
-#include "selftest.h"
 
 static const char *TAG = "main";
 
@@ -24,20 +25,21 @@ static void on_detect(int idx, const char *word) {
 void app_main(void) {
     ESP_ERROR_CHECK(ws2812_init());
 
-    //selftest_run();  /* does nothing unless built with -DRUN_SELFTEST=1 */
-
-    // if (!vad_sleep_wakeup_by_sound()) {
-    //     ESP_LOGI(TAG, "cold boot → sleep");
-    //     vad_sleep_enter(true);
-    //     return;
-    // }
+    if (!vad_sleep_wakeup_by_sound()) {
+        ESP_LOGI(TAG, "cold boot → sleep");
+        vad_sleep_enter(true);
+        return;
+    }
 
     ESP_LOGI(TAG, "sound wakeup → inference");
     ESP_ERROR_CHECK(i2s_mic_init());
     ESP_ERROR_CHECK(voice_engine_init());
 
-    voice_engine_run(3000000, on_detect);
+    /* Single-shot: record, detect, done */
+    voice_engine_run(2500, on_detect);
 
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    ws2812_clear();
     voice_engine_deinit();
     vad_sleep_enter(true);
 }

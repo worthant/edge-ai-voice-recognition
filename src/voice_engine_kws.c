@@ -1,6 +1,11 @@
 /*
  * voice_engine_kws.c — custom DS-CNN backend.
- * Compiled only when USE_CUSTOM_KWS is defined.
+ *
+ * Single-shot mode:
+ *   1. Record listen_ms of audio after wake-up
+ *   2. Find the 1-second window with highest energy
+ *   3. Run MFCC + inference on that window
+ *   4. Report result via callback
  */
 
 #ifdef USE_CUSTOM_KWS
@@ -14,21 +19,20 @@
 #include "kws.h"
 #include "mfcc.h"
 #include "voice_engine.h"
-#include "ws2812_led.h"
+#include <stdlib.h>
+#include <string.h>
 
 static const char *TAG = "ve_kws";
 
 #define KWS_THRESHOLD 2.0f
 
 static mfcc_ctx_t *mfcc_ctx;
-static int16_t *audio_buf;
-static float (*mfcc_buf)[MFCC_NUM_COEFFS];
 
-static esp_err_t record_1s(int16_t *buf) {
+static esp_err_t record_samples(int16_t *buf, int total) {
     int filled = 0;
-    while (filled < MFCC_CLIP_SAMPLES) {
+    while (filled < total) {
         size_t got = 0;
-        int want = MFCC_CLIP_SAMPLES - filled;
+        int want = total - filled;
         if (want > I2S_MIC_CHUNK_SAMPLES)
             want = I2S_MIC_CHUNK_SAMPLES;
         esp_err_t r = i2s_mic_read_s16(buf + filled, want, &got);
@@ -39,8 +43,30 @@ static esp_err_t record_1s(int16_t *buf) {
     return ESP_OK;
 }
 
+static int find_best_window(const int16_t *buf, int total_samples) {
+    int window = MFCC_CLIP_SAMPLES;
+    int stride = MFCC_STRIDE_SAMPLES;
+    int best_offset = 0;
+    float best_energy = 0.0f;
+
+    for (int off = 0; off + window <= total_samples; off += stride) {
+        float energy = 0.0f;
+        for (int i = off; i < off + window; i++) {
+            float s = (float)buf[i];
+            energy += s * s;
+        }
+        if (energy > best_energy) {
+            best_energy = energy;
+            best_offset = off;
+        }
+    }
+
+    ESP_LOGI(TAG, "best window at %.0f ms, energy=%.0f",
+             best_offset * 1000.0f / MFCC_SAMPLE_RATE, best_energy);
+    return best_offset;
+}
+
 esp_err_t voice_engine_init(void) {
-    ESP_LOGI("kws_voice_engine_init", "KWS voice engine init");
     esp_err_t r = mfcc_init(&mfcc_ctx);
     if (r != ESP_OK)
         return r;
@@ -51,54 +77,75 @@ esp_err_t voice_engine_init(void) {
         return r;
     }
 
-    audio_buf = heap_caps_malloc(MFCC_CLIP_SAMPLES * sizeof(int16_t),
-                                 MALLOC_CAP_SPIRAM);
-    mfcc_buf = heap_caps_malloc(
-        sizeof(float) * MFCC_NUM_FRAMES * MFCC_NUM_COEFFS, MALLOC_CAP_SPIRAM);
-    if (!audio_buf || !mfcc_buf) {
-        ESP_LOGE(TAG, "alloc failed");
-        return ESP_ERR_NO_MEM;
-    }
     return ESP_OK;
 }
 
 void voice_engine_run(uint32_t listen_ms, voice_detect_cb_t cb) {
-    int64_t deadline = esp_timer_get_time() + (int64_t)listen_ms * 1000;
-    int n = 0;
+    int record_samples_count = (MFCC_SAMPLE_RATE * listen_ms) / 1000;
+    if (record_samples_count < MFCC_CLIP_SAMPLES)
+        record_samples_count = MFCC_CLIP_SAMPLES;
 
-    ESP_LOGI(TAG, "listening for %lu ms...", (unsigned long)listen_ms);
+    int16_t *audio = heap_caps_malloc(record_samples_count * sizeof(int16_t),
+                                      MALLOC_CAP_SPIRAM);
+    float (*mfcc)[MFCC_NUM_COEFFS] = heap_caps_malloc(
+        sizeof(float) * MFCC_NUM_FRAMES * MFCC_NUM_COEFFS, MALLOC_CAP_SPIRAM);
 
-    while (esp_timer_get_time() < deadline) {
-        if (record_1s(audio_buf) != ESP_OK)
-            continue;
-
-        mfcc_compute(mfcc_ctx, audio_buf, mfcc_buf);
-
-        kws_result_t res;
-        kws_classify(mfcc_buf, &res);
-        n++;
-
-        ESP_LOGI(TAG, "[%d] %s (%.3f)", n, kws_label_name(res.label),
-                 res.score);
-
-        if (res.label != KWS_SILENCE && res.label != KWS_UNKNOWN &&
-            res.score >= KWS_THRESHOLD) {
-            if (cb)
-                cb((int)res.label, kws_label_name(res.label));
-        }
+    if (!audio || !mfcc) {
+        ESP_LOGE(TAG, "alloc failed");
+        free(audio);
+        free(mfcc);
+        return;
     }
 
-    ESP_LOGI(TAG, "done, %d inferences", n);
+    ESP_LOGI(TAG, "recording %lu ms (%d samples)...", (unsigned long)listen_ms,
+             record_samples_count);
+
+    int64_t t0 = esp_timer_get_time();
+    esp_err_t r = record_samples(audio, record_samples_count);
+    int64_t t_rec = esp_timer_get_time() - t0;
+
+    if (r != ESP_OK) {
+        ESP_LOGE(TAG, "recording failed: %s", esp_err_to_name(r));
+        free(audio);
+        free(mfcc);
+        return;
+    }
+    ESP_LOGI(TAG, "recorded in %lld ms", (long long)(t_rec / 1000));
+
+    int offset = find_best_window(audio, record_samples_count);
+
+    t0 = esp_timer_get_time();
+    mfcc_compute(mfcc_ctx, audio + offset, mfcc);
+    int64_t t_mfcc = esp_timer_get_time() - t0;
+
+    kws_result_t res;
+    t0 = esp_timer_get_time();
+    kws_classify(mfcc, &res);
+    int64_t t_inf = esp_timer_get_time() - t0;
+
+    ESP_LOGI(TAG, "mfcc=%lldms inf=%lldms → %s (%.3f)",
+             (long long)(t_mfcc / 1000), (long long)(t_inf / 1000),
+             kws_label_name(res.label), res.score);
+
+    if (res.label != KWS_SILENCE && res.label != KWS_UNKNOWN &&
+        res.score >= KWS_THRESHOLD) {
+        ESP_LOGW(TAG, ">>> DETECTED: %s (%.3f) <<<", kws_label_name(res.label),
+                 res.score);
+        if (cb)
+            cb((int)res.label, kws_label_name(res.label));
+    } else {
+        ESP_LOGI(TAG, "no keyword (best: %s %.3f)", kws_label_name(res.label),
+                 res.score);
+    }
+
+    free(mfcc);
+    free(audio);
 }
 
 void voice_engine_deinit(void) {
-    free(mfcc_buf);
-    mfcc_buf = NULL;
-    free(audio_buf);
-    audio_buf = NULL;
     kws_deinit();
     mfcc_free(mfcc_ctx);
     mfcc_ctx = NULL;
 }
 
-#endif /* USE_CUSTOM_KWS */
+#endif

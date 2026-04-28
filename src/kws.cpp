@@ -76,6 +76,10 @@ esp_err_t kws_init(void) {
         return ESP_FAIL;
     }
 
+    ESP_LOGI(TAG, "free internal: %zu KB  free PSRAM: %zu KB",
+         heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
+         heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+
     input_tensor = interpreter->input(0);
     output_tensor = interpreter->output(0);
 

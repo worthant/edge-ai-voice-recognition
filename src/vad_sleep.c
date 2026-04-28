@@ -30,7 +30,7 @@ void vad_sleep_enter(bool enable_led) {
 
     rtc_gpio_init(SOUND_GPIO);
     rtc_gpio_set_direction(SOUND_GPIO, RTC_GPIO_MODE_INPUT_ONLY);
-    rtc_gpio_pullup_dis(SOUND_GPIO);
+    rtc_gpio_pullup_en(SOUND_GPIO);
     rtc_gpio_pulldown_dis(SOUND_GPIO);
 
     ESP_ERROR_CHECK(esp_sleep_enable_ext1_wakeup(1ULL << SOUND_GPIO,
