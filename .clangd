@@ -4,6 +4,7 @@ CompileFlags:
     - "-DUSE_CUSTOM_KWS=1"
     - "-I/home/boris/.platformio/packages/framework-espidf/components/esp_driver_i2s/include"
     - "-I/home/boris/.platformio/packages/framework-espidf/components/esp_timer/include"
+    - "-I/home/boris/.platformio/packages/framework-espidf/components/esp_driver_spi/include"
   Remove:
     - "-mlongcalls"
     - "-fstrict-volatile-bitfields"

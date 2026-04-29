@@ -10,6 +10,7 @@
 
 #ifdef USE_CUSTOM_KWS
 
+#include "display.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -19,6 +20,7 @@
 #include "kws.h"
 #include "mfcc.h"
 #include "voice_engine.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,8 +30,9 @@ static const char *TAG = "ve_kws";
 
 static mfcc_ctx_t *mfcc_ctx;
 
-static esp_err_t record_samples(int16_t *buf, int total) {
+static esp_err_t record_samples_with_progress(int16_t *buf, int total) {
     int filled = 0;
+    int last_pct = -1;
     while (filled < total) {
         size_t got = 0;
         int want = total - filled;
@@ -39,6 +42,12 @@ static esp_err_t record_samples(int16_t *buf, int total) {
         if (r != ESP_OK)
             return r;
         filled += got;
+
+        int pct = (filled * 100) / total;
+        if (pct != last_pct) {
+            display_progress(pct, DISP_BLACK);
+            last_pct = pct;
+        }
     }
     return ESP_OK;
 }
@@ -60,9 +69,6 @@ static int find_best_window(const int16_t *buf, int total_samples) {
             best_offset = off;
         }
     }
-
-    ESP_LOGI(TAG, "best window at %.0f ms, energy=%.0f",
-             best_offset * 1000.0f / MFCC_SAMPLE_RATE, best_energy);
     return best_offset;
 }
 
@@ -76,17 +82,16 @@ esp_err_t voice_engine_init(void) {
         mfcc_free(mfcc_ctx);
         return r;
     }
-
     return ESP_OK;
 }
 
 void voice_engine_run(uint32_t listen_ms, voice_detect_cb_t cb) {
-    int record_samples_count = (MFCC_SAMPLE_RATE * listen_ms) / 1000;
-    if (record_samples_count < MFCC_CLIP_SAMPLES)
-        record_samples_count = MFCC_CLIP_SAMPLES;
+    int record_count = (MFCC_SAMPLE_RATE * listen_ms) / 1000;
+    if (record_count < MFCC_CLIP_SAMPLES)
+        record_count = MFCC_CLIP_SAMPLES;
 
-    int16_t *audio = heap_caps_malloc(record_samples_count * sizeof(int16_t),
-                                      MALLOC_CAP_SPIRAM);
+    int16_t *audio =
+        heap_caps_malloc(record_count * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     float (*mfcc)[MFCC_NUM_COEFFS] = heap_caps_malloc(
         sizeof(float) * MFCC_NUM_FRAMES * MFCC_NUM_COEFFS, MALLOC_CAP_SPIRAM);
 
@@ -97,44 +102,56 @@ void voice_engine_run(uint32_t listen_ms, voice_detect_cb_t cb) {
         return;
     }
 
-    ESP_LOGI(TAG, "recording %lu ms (%d samples)...", (unsigned long)listen_ms,
-             record_samples_count);
+    /* record */
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%lums", (unsigned long)listen_ms);
+    display_fsm("RECORD", buf, DISP_YELLOW, DISP_BLACK);
 
     int64_t t0 = esp_timer_get_time();
-    esp_err_t r = record_samples(audio, record_samples_count);
+    esp_err_t r = record_samples_with_progress(audio, record_count);
     int64_t t_rec = esp_timer_get_time() - t0;
 
     if (r != ESP_OK) {
-        ESP_LOGE(TAG, "recording failed: %s", esp_err_to_name(r));
+        ESP_LOGE(TAG, "recording failed");
         free(audio);
         free(mfcc);
         return;
     }
-    ESP_LOGI(TAG, "recorded in %lld ms", (long long)(t_rec / 1000));
+    ESP_LOGI(TAG, "recorded %lldms", (long long)(t_rec / 1000));
 
-    int offset = find_best_window(audio, record_samples_count);
+    /* mfcc calc */
+    int offset = find_best_window(audio, record_count);
+    display_fsm("MFCC", "49x10", DISP_ORANGE, DISP_BLACK);
 
     t0 = esp_timer_get_time();
     mfcc_compute(mfcc_ctx, audio + offset, mfcc);
     int64_t t_mfcc = esp_timer_get_time() - t0;
+    ESP_LOGI(TAG, "MFCC %lldms", (long long)(t_mfcc / 1000));
+
+    /* inference */
+    display_fsm("INFERENCE", "DS-CNN-M", DISP_PURPLE, DISP_BLACK);
 
     kws_result_t res;
     t0 = esp_timer_get_time();
     kws_classify(mfcc, &res);
     int64_t t_inf = esp_timer_get_time() - t0;
+    int inf_ms = (int)(t_inf / 1000);
 
-    ESP_LOGI(TAG, "mfcc=%lldms inf=%lldms → %s (%.3f)",
-             (long long)(t_mfcc / 1000), (long long)(t_inf / 1000),
-             kws_label_name(res.label), res.score);
+    ESP_LOGI(TAG, "inf=%dms -> %s (%.3f)", inf_ms, kws_label_name(res.label),
+             res.score);
 
+    /* result */
     if (res.label != KWS_SILENCE && res.label != KWS_UNKNOWN &&
         res.score >= KWS_THRESHOLD) {
         ESP_LOGW(TAG, ">>> DETECTED: %s (%.3f) <<<", kws_label_name(res.label),
                  res.score);
+        display_detection(kws_label_name(res.label), res.score, inf_ms);
         if (cb)
             cb((int)res.label, kws_label_name(res.label));
     } else {
-        ESP_LOGI(TAG, "no keyword (best: %s %.3f)", kws_label_name(res.label),
+        snprintf(buf, sizeof(buf), "%.2f", res.score);
+        display_fsm("SILENCE", buf, DISP_BLACK, DISP_GRAY);
+        ESP_LOGI(TAG, "no keyword (%s %.3f)", kws_label_name(res.label),
                  res.score);
     }
 
