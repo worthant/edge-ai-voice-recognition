@@ -8,6 +8,7 @@
  *   4. Report result via callback
  */
 
+#include "sync_gpio.h"
 #ifdef USE_CUSTOM_KWS
 
 #include "display.h"
@@ -103,6 +104,7 @@ void voice_engine_run(uint32_t listen_ms, voice_detect_cb_t cb) {
     }
 
     /* record */
+    sync_pulse(); // signal record state to logger
     char buf[32];
     snprintf(buf, sizeof(buf), "%lums", (unsigned long)listen_ms);
     display_fsm("RECORD", buf, DISP_YELLOW, DISP_BLACK);
@@ -120,6 +122,7 @@ void voice_engine_run(uint32_t listen_ms, voice_detect_cb_t cb) {
     ESP_LOGI(TAG, "recorded %lldms", (long long)(t_rec / 1000));
 
     /* mfcc calc */
+    sync_pulse(); // signal mfcc state to logger
     int offset = find_best_window(audio, record_count);
     display_fsm("MFCC", "49x10", DISP_ORANGE, DISP_BLACK);
 
@@ -129,6 +132,7 @@ void voice_engine_run(uint32_t listen_ms, voice_detect_cb_t cb) {
     ESP_LOGI(TAG, "MFCC %lldms", (long long)(t_mfcc / 1000));
 
     /* inference */
+    sync_pulse(); // signal inference state to logger
     display_fsm("INFERENCE", "DS-CNN-M", DISP_PURPLE, DISP_BLACK);
 
     kws_result_t res;
@@ -141,6 +145,7 @@ void voice_engine_run(uint32_t listen_ms, voice_detect_cb_t cb) {
              res.score);
 
     /* result */
+    sync_pulse(); // signal result state to logger
     if (res.label != KWS_SILENCE && res.label != KWS_UNKNOWN &&
         res.score >= KWS_THRESHOLD) {
         ESP_LOGW(TAG, ">>> DETECTED: %s (%.3f) <<<", kws_label_name(res.label),

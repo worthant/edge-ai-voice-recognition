@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "i2s_mic.h"
+#include "sync_gpio.h"
 #include "vad_sleep.h"
 #include "voice_engine.h"
 #include "ws2812_led.h"
@@ -24,20 +25,21 @@ static void on_detect(int idx, const char *word) {
 }
 
 void app_main(void) {
-    int64_t t_boot = esp_timer_get_time();
-
-    ESP_ERROR_CHECK(ws2812_init());
-    ESP_ERROR_CHECK(display_init());
+    ESP_ERROR_CHECK(sync_gpio_init()); // sync with logger first
 
     if (!vad_sleep_wakeup_by_sound()) {
         ESP_LOGI(TAG, "cold boot -> sleep");
-        display_fsm("SLEEP", "zzz...", DISP_DKGREEN, DISP_BLACK);
-        vTaskDelay(pdMS_TO_TICKS(500));
         vad_sleep_enter(true);
         return;
     }
 
     /* wake tf up! */
+    sync_pulse(); // signal wakeup state to logger
+
+    int64_t t_boot = esp_timer_get_time();
+    ESP_ERROR_CHECK(ws2812_init());
+    ESP_ERROR_CHECK(display_init());
+
     char buf[32];
     snprintf(buf, sizeof(buf), "%lldms", (long long)(t_boot / 1000));
     display_fsm("WAKE UP", buf, DISP_RED, DISP_BLACK);
@@ -57,6 +59,7 @@ void app_main(void) {
     vTaskDelay(pdMS_TO_TICKS(3000));
 
     /* go sleep */
+    sync_pulse(); // signal sleep state to logger
     ws2812_clear();
     display_fsm("SLEEP", "zzz...", DISP_DKGREEN, DISP_BLACK);
     vTaskDelay(pdMS_TO_TICKS(500));
