@@ -2,28 +2,30 @@
 Конфигурация всех экспериментов для ВКР.
 
 Каждый эксперимент = RunConfig: гиперпараметры архитектуры + метод
-квантизации. Slug формируется автоматически из параметров и используется
-как имя папки в results/runs/<slug>/, как идентификатор в _index.csv,
-как имя файла профиля бенчмарка на устройстве (profile_<slug>.csv).
+квантизации. Slug формируется автоматически и используется как имя
+папки в results/runs/<slug>/, идентификатор в _index.csv, имя файла
+профиля на устройстве (profile_<slug>.csv).
 
 Эксперименты сгруппированы по исследовательским вопросам:
 
-  GROUP_A — SIMD-выравнивание (главная находка): фиксируем blocks=6,
-            варьируем filters так чтобы пересечь границу % 8 == 0.
-            Все QAT.
-  GROUP_B — PTQ vs QAT: на двух конфигурациях (baseline 172 и aligned 176)
-            делаем по два метода квантизации.
-  GROUP_C — глубина сети: 4, 6, 8 блоков на f176 + QAT.
+  GROUP_A — SIMD-выравнивание + Pareto по filters (10 моделей):
+            blocks=6, варьируем filters от 64 до 224. Накрывает SIMD-границу
+            (172 не aligned, остальные aligned). Главное исследование.
+  GROUP_B — PTQ vs QAT (4 модели): PTQ-параллели для 96/172/176/192.
+            QAT-парные уже есть в GROUP_A. Задача 3 ВКР.
+  GROUP_C — глубина сети (5 моделей, b6 уже в A): blocks 2/4/5/7/8
+            на filters=176. Кривая accuracy/latency vs depth.
 
-Запуск всей серии:
-    python -m train_all
-Запуск одного:
-    python -m train --slug f176_b6_qat
+Итого: 10 + 4 + 5 = 19 уникальных runs.
+
+Запуск всей серии:    python train_all.py
+Запуск одного:         python train.py --slug f176_b6_qat
+Сводка экспериментов:  python runs.py
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -36,24 +38,22 @@ QuantMethod = Literal["fp32", "ptq", "qat"]
 class RunConfig:
     """Параметры одного эксперимента."""
 
-    filters: int  # число фильтров и в stem-conv, и в DS-блоках
-    blocks: int  # число DS-Conv блоков
-    quant: QuantMethod  # метод квантизации
-    description: str = ""  # короткое описание для отчётов
+    filters: int
+    blocks: int
+    quant: QuantMethod
+    description: str = ""
 
     @property
     def slug(self) -> str:
-        """Машинно-читаемый идентификатор: f176_b6_qat."""
         return f"f{self.filters}_b{self.blocks}_{self.quant}"
 
     @property
     def is_simd_aligned(self) -> bool:
-        """Кратно ли число фильтров 8 (условие SIMD-кернела esp-nn для 1×1)."""
+        """Кратно ли filters 8 (условие SIMD-кернела esp-nn для 1×1)."""
         return self.filters % 8 == 0
 
     @property
     def ds_cnn_config(self) -> dict:
-        """Конфиг для build_ds_cnn(), совместим с прежним DS_CNN_CONFIG."""
         return {
             "first_conv_filters": self.filters,
             "first_conv_kernel": (10, 4),
@@ -65,7 +65,6 @@ class RunConfig:
 
     @property
     def run_dir(self) -> Path:
-        """results/runs/<slug>/ — все артефакты эксперимента живут здесь."""
         return RUNS_ROOT / self.slug
 
     @property
@@ -74,7 +73,6 @@ class RunConfig:
 
     @property
     def tflite_path(self) -> Path:
-        """Финальная квантованная (или fp32) модель для деплоя."""
         if self.quant == "fp32":
             return self.run_dir / "model_fp32.tflite"
         return self.run_dir / f"model_{self.quant}_int8.tflite"
@@ -92,29 +90,26 @@ class RunConfig:
         return self.run_dir / "meta.json"
 
 
-# Корень для всех экспериментов
 RUNS_ROOT = config.RESULTS_DIR / "runs"
 RUNS_ROOT.mkdir(parents=True, exist_ok=True)
-
-# Сводный индекс всех runs (sklearn-style: одна строка на эксперимент)
 INDEX_CSV = RUNS_ROOT / "_index.csv"
 
 
 # =============================================================================
-# Группа A — SIMD-выравнивание
+# Группа A — SIMD-выравнивание + Pareto frontier по filters (10 моделей)
 # =============================================================================
-# Главное исследование. blocks=6 фиксирован (=Medium из Hello Edge).
-# Варьируем filters вокруг 172 (baseline) с пересечением границы % 8.
-# Из этих 6 точек выйдет основной график "латентность vs filters".
 GROUP_A: list[RunConfig] = [
+    RunConfig(filters=64, blocks=6, quant="qat", description="small, aligned"),
+    RunConfig(filters=96, blocks=6, quant="qat", description="small-mid, aligned"),
+    RunConfig(filters=128, blocks=6, quant="qat", description="mid, aligned"),
     RunConfig(
-        filters=160,
-        blocks=6,
-        quant="qat",
-        description="SIMD aligned, weaker than baseline",
+        filters=160, blocks=6, quant="qat", description="aligned, below baseline"
     ),
     RunConfig(
-        filters=168, blocks=6, quant="qat", description="SIMD aligned, slightly weaker"
+        filters=168,
+        blocks=6,
+        quant="qat",
+        description="aligned, slightly below baseline",
     ),
     RunConfig(
         filters=172,
@@ -123,72 +118,60 @@ GROUP_A: list[RunConfig] = [
         description="BASELINE: Hello Edge DS-CNN-M (NOT aligned)",
     ),
     RunConfig(
-        filters=176,
-        blocks=6,
-        quant="qat",
-        description="SIMD aligned, slightly stronger",
+        filters=176, blocks=6, quant="qat", description="aligned, just above baseline"
     ),
-    RunConfig(filters=184, blocks=6, quant="qat", description="SIMD aligned, stronger"),
     RunConfig(
-        filters=192,
-        blocks=6,
-        quant="qat",
-        description="SIMD aligned, strongest in series",
+        filters=184, blocks=6, quant="qat", description="aligned, above baseline"
+    ),
+    RunConfig(
+        filters=192, blocks=6, quant="qat", description="aligned, above baseline"
+    ),
+    RunConfig(
+        filters=224, blocks=6, quant="qat", description="large, aligned (top of range)"
     ),
 ]
 
 # =============================================================================
-# Группа B — PTQ vs QAT
+# Группа B — PTQ vs QAT (4 модели)
 # =============================================================================
-# Прямое сравнение методов квантизации по задаче 3 ВКР.
-# Берём baseline (172) и aligned (176), для каждого делаем PTQ и QAT.
-# Две из четырёх моделей (172_qat, 176_qat) уже есть в Группе A — не дублируем.
 GROUP_B: list[RunConfig] = [
+    RunConfig(filters=96, blocks=6, quant="ptq", description="PTQ on small model"),
     RunConfig(
         filters=172,
         blocks=6,
         quant="ptq",
-        description="PTQ on baseline, paired with f172_b6_qat",
+        description="PTQ on baseline (172, not aligned)",
     ),
     RunConfig(
-        filters=176,
-        blocks=6,
-        quant="ptq",
-        description="PTQ on aligned, paired with f176_b6_qat",
+        filters=176, blocks=6, quant="ptq", description="PTQ on aligned baseline"
+    ),
+    RunConfig(
+        filters=192, blocks=6, quant="ptq", description="PTQ on larger aligned model"
     ),
 ]
 
 # =============================================================================
-# Группа C — глубина сети
+# Группа C — глубина сети (5 моделей)
 # =============================================================================
-# Опциональное расширение: как влияет число DS-блоков? Фиксируем filters=176
-# (aligned), варьируем blocks. Точка blocks=6 уже есть в Группе A.
 GROUP_C: list[RunConfig] = [
-    RunConfig(
-        filters=176,
-        blocks=4,
-        quant="qat",
-        description="Shallower variant of aligned baseline",
-    ),
-    RunConfig(
-        filters=176,
-        blocks=8,
-        quant="qat",
-        description="Deeper variant of aligned baseline",
-    ),
+    RunConfig(filters=176, blocks=2, quant="qat", description="very shallow"),
+    RunConfig(filters=176, blocks=4, quant="qat", description="shallow"),
+    RunConfig(filters=176, blocks=5, quant="qat", description="medium-shallow"),
+    RunConfig(filters=176, blocks=7, quant="qat", description="deep"),
+    RunConfig(filters=176, blocks=8, quant="qat", description="very deep"),
 ]
 
-# Объединённый порядок выполнения. Если хотим прервать на половине —
-# чтобы хотя бы Группа A была закрыта, она идёт первой.
-ALL_RUNS: list[RunConfig] = GROUP_A + GROUP_B + GROUP_C
-
-# Дедупликация на случай если в группах одна и та же модель встретится дважды.
+# Объединение с дедупликацией по slug.
+_all_with_duplicates = GROUP_A + GROUP_B + GROUP_C
 _seen: set[str] = set()
-ALL_RUNS = [r for r in ALL_RUNS if not (r.slug in _seen or _seen.add(r.slug))]
+ALL_RUNS: list[RunConfig] = []
+for r in _all_with_duplicates:
+    if r.slug not in _seen:
+        _seen.add(r.slug)
+        ALL_RUNS.append(r)
 
 
 def find_run(slug: str) -> RunConfig:
-    """Найти RunConfig по slug; используется из train.py / quantize_*.py / export."""
     for r in ALL_RUNS:
         if r.slug == slug:
             return r
@@ -197,17 +180,16 @@ def find_run(slug: str) -> RunConfig:
 
 
 def print_summary() -> None:
-    """Печатает сводку: что будет обучено, в каком порядке, итого моделей."""
     print(f"Total runs: {len(ALL_RUNS)}\n")
     print(
-        f"{'#':<3} {'SLUG':<20} {'FILTERS':<8} {'BLOCKS':<7} "
+        f"{'#':<3} {'SLUG':<22} {'FILT':<5} {'BLK':<4} "
         f"{'QUANT':<6} {'%8':<4} DESCRIPTION"
     )
     print("-" * 100)
     for i, r in enumerate(ALL_RUNS, 1):
         aligned = "yes" if r.is_simd_aligned else "NO "
         print(
-            f"{i:<3} {r.slug:<20} {r.filters:<8} {r.blocks:<7} "
+            f"{i:<3} {r.slug:<22} {r.filters:<5} {r.blocks:<4} "
             f"{r.quant:<6} {aligned:<4} {r.description}"
         )
 
