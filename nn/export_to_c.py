@@ -1,30 +1,50 @@
 """
-Конвертация .tflite -> model_data.cc / model_data.h для TFLite Micro.
-Формат совместим с tflite-micro examples (alignas(16), const uint8_t).
+Экспорт .tflite в C-массив для TFLite Micro.
+
+Изменения:
+- Принимает --slug, читает model.tflite из runs/<slug>/.
+- Записывает model_data.{c,h} в ту же папку (runs/<slug>/).
+- Прошивка подключает model_data из runs/<MODEL_SLUG>/ через
+  CMake-параметр (см. src/CMakeLists.txt).
+
+Старый --input / --output режим тоже поддерживается для legacy-вызовов.
+
+Запуск:
+    python -m export_to_c --slug f176_b6_qat
 """
 
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-import config
-
+from runs import RunConfig, find_run
 
 HEADER_TEMPLATE = """\
 // Автоматически сгенерировано export_to_c.py
+// Slug: {slug}
 // Источник: {src}
 // Сгенерировано: {ts}
 // Размер: {size} байт
+// НЕ РЕДАКТИРОВАТЬ
 
 #ifndef NN_MODEL_DATA_H_
 #define NN_MODEL_DATA_H_
 
-#include <cstdint>
+#define MODEL_SLUG "{slug}"
+
+#ifdef __cplusplus
+extern "C" {{
+#endif
 
 extern const unsigned int g_model_data_size;
 extern const unsigned char g_model_data[];
+
+#ifdef __cplusplus
+}}
+#endif
 
 #endif  // NN_MODEL_DATA_H_
 """
@@ -32,14 +52,15 @@ extern const unsigned char g_model_data[];
 
 SOURCE_HEADER = """\
 // Автоматически сгенерировано export_to_c.py
+// Slug: {slug}
 // Источник: {src}
 // Сгенерировано: {ts}
 // Размер: {size} байт
-// НЕ редактируйте руками — будет перезаписано.
+// НЕ РЕДАКТИРОВАТЬ
 
 #include "model_data.h"
 
-alignas(16) const unsigned char g_model_data[] = {{
+__attribute__((aligned(16))) const unsigned char g_model_data[] = {{
 """
 
 SOURCE_FOOTER = """\
@@ -54,58 +75,63 @@ def _bytes_to_c_array(data: bytes, per_line: int = 12) -> str:
         chunk = data[i : i + per_line]
         hex_bytes = ", ".join(f"0x{b:02x}" for b in chunk)
         lines.append(f"    {hex_bytes},")
-    # убрать последнюю запятую
     if lines:
         lines[-1] = lines[-1].rstrip(",")
     return "\n".join(lines)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument(
-        "--input",
-        type=Path,
-        default=config.QAT_TFLITE,
-        help="Путь к .tflite файлу (по умолчанию: QAT модель)",
-    )
-    ap.add_argument(
-        "--output",
-        type=Path,
-        required=True,
-        help="Директория для model_data.cc и model_data.h",
-    )
-    args = ap.parse_args()
+def export(tflite_path: Path, out_dir: Path, slug: str = "") -> None:
+    if not tflite_path.exists():
+        raise FileNotFoundError(f"No file: {tflite_path}")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not args.input.exists():
-        raise FileNotFoundError(f"Нет файла {args.input}")
-    args.output.mkdir(parents=True, exist_ok=True)
-
-    data = args.input.read_bytes()
+    data = tflite_path.read_bytes()
     size = len(data)
-    ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    header = HEADER_TEMPLATE.format(src=args.input.name, ts=ts, size=size)
+    header = HEADER_TEMPLATE.format(
+        slug=slug or tflite_path.stem,
+        src=tflite_path.name,
+        ts=ts,
+        size=size,
+    )
     source = (
-        SOURCE_HEADER.format(src=args.input.name, ts=ts, size=size)
+        SOURCE_HEADER.format(
+            slug=slug or tflite_path.stem, src=tflite_path.name, ts=ts, size=size
+        )
         + _bytes_to_c_array(data)
         + "\n"
         + SOURCE_FOOTER.format(size=size)
     )
 
-    (args.output / "model_data.h").write_text(header)
-    (args.output / "model_data.cc").write_text(source)
+    (out_dir / "model_data.h").write_text(header)
+    (out_dir / "model_data.c").write_text(source)
+    print(f"[export_to_c] {tflite_path.name} ({size/1024:.1f} KB) → {out_dir}/")
 
-    print(f"[export_to_c] {args.input} ({size / 1024:.1f} KB) -> {args.output}")
-    print(f"[export_to_c] model_data.cc: {len(source)} символов")
-    # Грубая оценка RAM footprint: tensor arena + model data в flash
-    print(f"[export_to_c] Оценка:")
-    print(f"  Flash (model_data):        ~{size / 1024:.1f} KB")
-    print(
-        f"  RAM (tensor arena):        ~60 KB (начать с этого, корректировать после ESP_LOGI)"
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--slug", help="RunConfig slug (preferred)")
+    ap.add_argument("--input", type=Path, help="Legacy: path to .tflite")
+    ap.add_argument(
+        "--output", type=Path, help="Legacy: output directory (only with --input)"
     )
-    print(
-        f"  RAM (MFCC + audio buf):    ~8 KB (1с×int16 = 32KB если хранить целиком; ≤8KB stream)"
-    )
+    args = ap.parse_args()
+
+    if args.slug:
+        run = find_run(args.slug)
+        if not run.tflite_path.exists():
+            print(
+                f"[export_to_c] ERROR: no tflite for {args.slug} "
+                f"at {run.tflite_path}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        export(run.tflite_path, run.run_dir, slug=run.slug)
+    elif args.input and args.output:
+        export(args.input, args.output, slug=args.input.stem)
+    else:
+        ap.error("Specify --slug OR (--input AND --output)")
 
 
 if __name__ == "__main__":
