@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "i2s_mic.h"
+#include "profile_storage.h"
 #include "sync_gpio.h"
 #include "vad_sleep.h"
 #include "voice_engine.h"
@@ -48,6 +49,7 @@ void app_main(void) {
 
     ESP_ERROR_CHECK(i2s_mic_init());
     ESP_ERROR_CHECK(voice_engine_init());
+    profile_storage_init();
 
     /* record + mfcc calc + inference */
     int64_t t0 = esp_timer_get_time();

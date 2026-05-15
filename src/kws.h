@@ -44,6 +44,21 @@ esp_err_t kws_classify(const float mfcc[MFCC_NUM_FRAMES][MFCC_NUM_COEFFS],
 const char *kws_label_name(kws_label_t label);
 void kws_deinit(void);
 
+/*
+ * Benchmark mode: run inference N times on the current input tensor contents
+ * and stream a CSV profile over UART. Assumes kws_classify was called at least
+ * once before, so the input tensor already contains quantized MFCC.
+ *
+ * Output format on UART:
+ *   ===KWS_PROFILE_BEGIN===
+ *   kws_profile,runs=100,warmup=5,arena_used=NNNN
+ *   tag,total_ticks_us,event_count,avg_ticks_us,percent
+ *   CONV_2D,12345,100,123.45,42.30
+ *   ...
+ *   ===KWS_PROFILE_END===
+ */
+esp_err_t kws_benchmark(int num_runs, int warmup_runs);
+
 #ifdef __cplusplus
 }
 #endif

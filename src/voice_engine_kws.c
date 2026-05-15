@@ -144,6 +144,40 @@ void voice_engine_run(uint32_t listen_ms, voice_detect_cb_t cb) {
     ESP_LOGI(TAG, "inf=%dms -> %s (%.3f)", inf_ms, kws_label_name(res.label),
              res.score);
 
+    /* Benchmark trigger: if user said "stop" with high confidence, run
+     * 100 inferences on this MFCC and dump per-layer profile to SPIFFS. */
+    extern esp_err_t kws_benchmark(int num_runs, int warmup_runs);
+    if (res.label == KWS_STOP && res.score >= KWS_THRESHOLD) {
+        display_fsm("BENCH", "100 runs", DISP_PURPLE, DISP_BLACK);
+        ESP_LOGW(TAG, ">>> BENCH MODE (said 'stop') <<<");
+        esp_err_t br = kws_benchmark(100, 5);
+        if (br == ESP_OK) {
+            display_fsm("BENCH OK", "/spiffs", DISP_GREEN, DISP_BLACK);
+            ESP_LOGW(TAG, ">>> BENCH DONE — dumping CSV <<<");
+
+            /* Dump CSV to UART one time, framed with markers. */
+            FILE *f = fopen("/spiffs/profile.csv", "r");
+            if (f) {
+                printf("\n===PROFILE_CSV_BEGIN===\n");
+                char line[256];
+                while (fgets(line, sizeof(line), f)) {
+                    fputs(line, stdout);
+                }
+                fclose(f);
+                printf("===PROFILE_CSV_END===\n");
+                fflush(stdout);
+                ESP_LOGW(TAG, ">>> CSV dumped — copy between markers <<<");
+            } else {
+                ESP_LOGE(TAG, "fopen /spiffs/profile.csv for read failed");
+            }
+
+            display_fsm("DONE", "halted", DISP_GREEN, DISP_BLACK);
+            while (1) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+        }
+    }
+
     /* result */
     sync_pulse(); // signal result state to logger
     if (res.label != KWS_SILENCE && res.label != KWS_UNKNOWN &&

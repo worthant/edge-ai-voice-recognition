@@ -11,13 +11,16 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_spiffs.h"
 #include "esp_timer.h"
+#include "kws_profiler.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 #include <cmath>
 #include <cstring>
+#include <new>
 
 static const char *TAG = "kws";
 
@@ -32,6 +35,15 @@ static const tflite::Model *model = nullptr;
 static tflite::MicroInterpreter *interpreter = nullptr;
 static TfLiteTensor *input_tensor = nullptr;
 static TfLiteTensor *output_tensor = nullptr;
+
+/* Profiler for benchmark mode. Lives in .bss, allocated once. */
+static kws::LayerProfiler g_profiler;
+static bool g_profiler_attached = false;
+
+/* Buffers for placement-new of interpreter (avoids heap fragmentation
+ * when we rebuild the interpreter to attach the profiler). */
+alignas(tflite::MicroInterpreter) static uint8_t
+    g_interp_buf[sizeof(tflite::MicroInterpreter)];
 
 static const char *label_names[KWS_NUM_CLASSES] = {
     "yes", "no",  "up",   "down", "left",      "right",
@@ -59,17 +71,27 @@ esp_err_t kws_init(void) {
     resolver.AddDequantize();
     resolver.AddSoftmax(); /* in case converter added it */
 
-    /* 3. Tensor arena in internal RAM (esp-nn simd cores don't work with psram directly) */
-    tensor_arena = (uint8_t *)heap_caps_malloc(kArenaSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t largest_internal =
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    size_t free_internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    ESP_LOGI(TAG,
+             "before arena: free_internal=%uKB largest_block=%uKB needed=%uKB",
+             (unsigned)free_internal / 1024, (unsigned)largest_internal / 1024,
+             (unsigned)kArenaSize / 1024);
+
+    /* 3. Tensor arena in internal RAM (esp-nn simd cores don't work with psram
+     * directly) */
+    tensor_arena = (uint8_t *)heap_caps_malloc(kArenaSize, MALLOC_CAP_INTERNAL |
+                                                               MALLOC_CAP_8BIT);
     if (!tensor_arena) {
         ESP_LOGE(TAG, "arena alloc %d failed", kArenaSize);
         return ESP_ERR_NO_MEM;
     }
 
-    /* 4. Build interpreter */
-    static tflite::MicroInterpreter static_interp(model, resolver, tensor_arena,
-                                                  kArenaSize);
-    interpreter = &static_interp;
+    /* 4. Build interpreter — placement-new into static buffer so we can
+     * rebuild later (with profiler attached) without heap churn. */
+    interpreter = new (g_interp_buf)
+        tflite::MicroInterpreter(model, resolver, tensor_arena, kArenaSize);
 
     if (interpreter->AllocateTensors() != kTfLiteOk) {
         ESP_LOGE(TAG, "AllocateTensors failed");
@@ -77,8 +99,8 @@ esp_err_t kws_init(void) {
     }
 
     ESP_LOGI(TAG, "free internal: %zu KB  free PSRAM: %zu KB",
-         heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
-         heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
+             heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024,
+             heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024);
 
     input_tensor = interpreter->input(0);
     output_tensor = interpreter->output(0);
@@ -166,6 +188,113 @@ void kws_deinit(void) {
         tensor_arena = nullptr;
     }
     interpreter = nullptr;
+}
+
+esp_err_t kws_benchmark(int num_runs, int warmup_runs) {
+    if (!interpreter || !input_tensor) {
+        ESP_LOGE(TAG, "benchmark: not initialized");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Lazy-init profiler event buffer in PSRAM. */
+    if (!g_profiler.init(3200)) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Save current input tensor contents — we'll restore them after rebuild. */
+    size_t input_bytes = input_tensor->bytes;
+    int8_t *saved_input =
+        (int8_t *)heap_caps_malloc(input_bytes, MALLOC_CAP_INTERNAL);
+    if (!saved_input) {
+        ESP_LOGE(TAG, "save input alloc failed");
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(saved_input, input_tensor->data.int8, input_bytes);
+
+    /* Rebuild interpreter with profiler attached. We reuse the same model,
+     * resolver, and arena — only the interpreter object is recreated. */
+    if (!g_profiler_attached) {
+        ESP_LOGI(TAG, "attaching profiler, rebuilding interpreter");
+
+        /* Op resolver must outlive the interpreter. Same as in kws_init. */
+        static tflite::MicroMutableOpResolver<8> bench_resolver;
+        static bool bench_resolver_inited = false;
+        if (!bench_resolver_inited) {
+            bench_resolver.AddConv2D();
+            bench_resolver.AddDepthwiseConv2D();
+            bench_resolver.AddFullyConnected();
+            bench_resolver.AddMean();
+            bench_resolver.AddReshape();
+            bench_resolver.AddQuantize();
+            bench_resolver.AddDequantize();
+            bench_resolver.AddSoftmax();
+            bench_resolver_inited = true;
+        }
+
+        /* Destroy old interpreter, build new one in same buffer with profiler.
+         */
+        interpreter->~MicroInterpreter();
+        interpreter = new (g_interp_buf)
+            tflite::MicroInterpreter(model, bench_resolver, tensor_arena,
+                                     kArenaSize, nullptr, &g_profiler);
+
+        if (interpreter->AllocateTensors() != kTfLiteOk) {
+            ESP_LOGE(TAG, "rebuild AllocateTensors failed");
+            free(saved_input);
+            return ESP_FAIL;
+        }
+        input_tensor = interpreter->input(0);
+        output_tensor = interpreter->output(0);
+        g_profiler_attached = true;
+    }
+
+    /* Restore input (rebuild may have zeroed the arena). */
+    memcpy(input_tensor->data.int8, saved_input, input_bytes);
+    free(saved_input);
+
+    ESP_LOGI(TAG, "benchmark: warmup=%d runs=%d", warmup_runs, num_runs);
+
+    /* Warmup. Profiler records but we don't care — we'll see events anyway
+     * but begin_run() bookkeeping isn't called, so they get run_id=-1. */
+    for (int i = 0; i < warmup_runs; i++) {
+        if (interpreter->Invoke() != kTfLiteOk) {
+            ESP_LOGE(TAG, "warmup invoke %d failed", i);
+            return ESP_FAIL;
+        }
+    }
+
+    /* Actual measurement. begin_run() bumps run counter & resets op index. */
+    int64_t t_total_start = esp_timer_get_time();
+    for (int i = 0; i < num_runs; i++) {
+        g_profiler.begin_run();
+        if (interpreter->Invoke() != kTfLiteOk) {
+            ESP_LOGE(TAG, "bench invoke %d failed", i);
+            return ESP_FAIL;
+        }
+    }
+    int64_t t_total = esp_timer_get_time() - t_total_start;
+
+    ESP_LOGI(TAG, "benchmark done: total=%lldms avg_invoke=%lldus events=%d",
+             (long long)(t_total / 1000), (long long)(t_total / num_runs),
+             g_profiler.num_events());
+
+    /* Dump CSV to SPIFFS. */
+    FILE *f = fopen("/spiffs/profile.csv", "w");
+    if (!f) {
+        ESP_LOGE(TAG, "fopen /spiffs/profile.csv failed");
+        return ESP_FAIL;
+    }
+    /* Header line with metadata as CSV comment. */
+    fprintf(f,
+            "# kws_profile runs=%d warmup=%d arena_used=%u "
+            "total_us=%lld avg_invoke_us=%lld\n",
+            num_runs, warmup_runs, (unsigned)interpreter->arena_used_bytes(),
+            (long long)t_total, (long long)(t_total / num_runs));
+    g_profiler.dump_csv(f);
+    fclose(f);
+
+    ESP_LOGI(TAG, "profile written: /spiffs/profile.csv");
+    return ESP_OK;
 }
 
 } /* extern "C" */

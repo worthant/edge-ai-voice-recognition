@@ -5,5 +5,6 @@
 # ---------------------------------------------------
 nvs,        data,  nvs,      0x9000,    0x6000
 factory,    app,   factory,  0x10000,   2000K
+storage,    data,  spiffs,   ,          1500K
 # model not needed now - reserved for wakenet9
 # model,      data,  spiffs,   0xF1000,   1138K

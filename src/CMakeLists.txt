@@ -4,6 +4,7 @@ set(
   esp_partition
   esp_hw_support
   esp-dsp
+  spiffs
 )
 
 FILE(
