@@ -10,4 +10,6 @@ __pycache__
 *.pyc
 nn/results/*
 !nn/results/kws_results.zip
+!nn/results/kws_results_old_1_model.zip
+!nn/results/kws_results_19_models.zip
 *logs
