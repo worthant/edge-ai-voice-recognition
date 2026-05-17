@@ -165,8 +165,31 @@ GROUP_C: list[RunConfig] = [
     RunConfig(filters=224, blocks=8, description="xxl very deep"),
 ]
 
+GROUP_D: list[RunConfig] = [
+    # filters=40 — между B (32) и B (48)
+    RunConfig(filters=40, blocks=4, description="xxs depth=4"),
+    RunConfig(filters=40, blocks=5, description="xxs depth=5"),
+    RunConfig(filters=40, blocks=6, description="xxs depth=6"),
+    # filters=56 — между B (48) и B (64)
+    RunConfig(filters=56, blocks=4, description="ss depth=4"),
+    RunConfig(filters=56, blocks=5, description="ss depth=5"),
+    RunConfig(filters=56, blocks=6, description="ss depth=6"),
+    # filters=72 — между B (64) и B (80)
+    RunConfig(filters=72, blocks=4, description="ss-mid depth=4"),
+    RunConfig(filters=72, blocks=5, description="ss-mid depth=5"),
+    RunConfig(filters=72, blocks=6, description="ss-mid depth=6"),
+    # filters=88 — между B (80) и B (96)
+    RunConfig(filters=88, blocks=4, description="mmid depth=4"),
+    RunConfig(filters=88, blocks=5, description="mmid depth=5"),
+    RunConfig(filters=88, blocks=6, description="mmid depth=6"),
+    # filters=104 — между B (96) и B (112)
+    RunConfig(filters=104, blocks=4, description="mmid-l depth=4"),
+    RunConfig(filters=104, blocks=5, description="mmid-l depth=5"),
+    RunConfig(filters=104, blocks=6, description="mmid-l depth=6"),
+]
+
 # Объединение с дедупликацией по slug.
-_all_with_duplicates = GROUP_A + GROUP_B + GROUP_C
+_all_with_duplicates = GROUP_A + GROUP_B + GROUP_C + GROUP_D
 _seen: set[str] = set()
 ALL_RUNS: list[RunConfig] = []
 for r in _all_with_duplicates:
@@ -184,6 +207,8 @@ def selected_runs() -> list[RunConfig]:
         return GROUP_B
     if group == "C":
         return GROUP_C
+    if group == "D":
+        return GROUP_D
     return ALL_RUNS
 
 
