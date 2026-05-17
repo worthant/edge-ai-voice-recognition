@@ -188,8 +188,23 @@ GROUP_D: list[RunConfig] = [
     RunConfig(filters=104, blocks=6, description="mmid-l depth=6"),
 ]
 
+GROUP_LAST1: list[RunConfig] = [
+    RunConfig(filters=224, blocks=4, description="xxl shallow"),
+    RunConfig(filters=224, blocks=8, description="xxl very deep"),
+    RunConfig(filters=96, blocks=4, description="mid depth=4"),
+    RunConfig(filters=96, blocks=5, description="mid depth=5"),
+]
+
+GROUP_LAST2: list[RunConfig] = [
+    RunConfig(filters=112, blocks=4, description="mid-l depth=4"),
+    RunConfig(filters=112, blocks=5, description="mid-l depth=5"),
+    RunConfig(filters=112, blocks=6, description="mid-l depth=6"),
+    RunConfig(filters=128, blocks=4, description="l depth=4"),
+    RunConfig(filters=128, blocks=5, description="l depth=5"),
+]
+
 # Объединение с дедупликацией по slug.
-_all_with_duplicates = GROUP_A + GROUP_B + GROUP_C + GROUP_D
+_all_with_duplicates = GROUP_A + GROUP_B + GROUP_C + GROUP_D + GROUP_LAST1 + GROUP_LAST2
 _seen: set[str] = set()
 ALL_RUNS: list[RunConfig] = []
 for r in _all_with_duplicates:
@@ -209,6 +224,10 @@ def selected_runs() -> list[RunConfig]:
         return GROUP_C
     if group == "D":
         return GROUP_D
+    if group == "LAST_1":
+        return GROUP_LAST1
+    if group == "LAST_2":
+        return GROUP_LAST2
     return ALL_RUNS
 
 
