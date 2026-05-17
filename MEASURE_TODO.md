@@ -32,10 +32,10 @@
   - [x] `measurements/energy/energy_f128_b6_qat.csv`
   - [x] `measurements/stats/stats_f128_b6_qat.csv`
 
-- [ ] **f160_b6_qat**
-  - [ ] `measurements/profile/profile_f160_b6_qat.csv`
-  - [ ] `measurements/energy/energy_f160_b6_qat.csv`
-  - [ ] `measurements/stats/stats_f160_b6_qat.csv`
+- [x] **f160_b6_qat**
+  - [x] `measurements/profile/profile_f160_b6_qat.csv`
+  - [x] `measurements/energy/energy_f160_b6_qat.csv`
+  - [x] `measurements/stats/stats_f160_b6_qat.csv`
 
 - [ ] **f168_b6_qat**
   - [ ] `measurements/profile/profile_f168_b6_qat.csv`
