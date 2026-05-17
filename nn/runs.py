@@ -3,25 +3,19 @@
 
 Каждый эксперимент = RunConfig: одна архитектура DS-CNN (filters + blocks).
 Для каждой архитектуры пайплайн обучает FP32 один раз, затем делает PTQ
-и QAT параллельно от того же FP32-чекпойнта. Это даёт честное сравнение
-методов квантизации.
-
-Слаг архитектуры: f<FILT>_b<BLK>  (без суффикса метода квантизации).
-Метрики хранятся в одном meta.json со всеми ключами:
-  fp32_acc_pct, ptq_acc_pct, qat_acc_pct,
-  fp32_size_kb, ptq_size_kb, qat_size_kb,
-  params, simd_aligned, ...
+и QAT параллельно от того же FP32-чекпойнта.
 
 Группы:
-  GROUP_A — 19 архитектур, унаследованных от старых runs (старые tflite
-            подхватываем; нужно только досчитать PTQ/QAT там где их нет).
-  GROUP_B — 21 новая архитектура: плотная сетка в «быстрой зоне»
-            (filters 32-128) + контрольные точки.
+  GROUP_A — 15 архитектур, унаследованных от старых runs.
+  GROUP_B — 20 новых, плотная сетка в «быстрой зоне» (filters 32-128).
+  GROUP_C — 13 «дыр-закрывающих»: ультра-мелкие (f16/f24),
+            доп. глубина для f64/f128, крупные filters с разной глубиной.
 
-Для двух колаб-аккаунтов используем переменную окружения KWS_GROUP:
-  KWS_GROUP=A  python -m train_all   # обучаем GROUP_A
-  KWS_GROUP=B  python -m train_all   # обучаем GROUP_B
-  (без переменной — оба).
+Выбор группы:
+  KWS_GROUP=A python -m train_all
+  KWS_GROUP=B python -m train_all
+  KWS_GROUP=C python -m train_all
+  python -m train_all                  # все три
 """
 
 from __future__ import annotations
@@ -47,7 +41,6 @@ class RunConfig:
 
     @property
     def is_simd_aligned(self) -> bool:
-        """Кратно ли filters 8 (условие SIMD-кернела esp-nn для 1×1)."""
         return self.filters % 8 == 0
 
     @property
@@ -83,7 +76,6 @@ class RunConfig:
 
     @property
     def legacy_qat_dir(self) -> Path:
-        """Путь к старой папке вида f<F>_b<B>_qat/ для подхвата FP32-весов."""
         return RUNS_ROOT / f"{self.slug}_qat"
 
     @property
@@ -97,9 +89,7 @@ INDEX_CSV = RUNS_ROOT / "_index.csv"
 
 
 # =============================================================================
-# Группа A — 19 архитектур, что уже обучены в _old_19_runs.
-# Стратегия: переиспользуем существующие FP32-чекпойнты,
-# для каждой архитектуры досчитываем недостающие PTQ/QAT.
+# Группа A — старые архитектуры (15)
 # =============================================================================
 GROUP_A: list[RunConfig] = [
     RunConfig(filters=64, blocks=6, description="small, aligned"),
@@ -112,7 +102,6 @@ GROUP_A: list[RunConfig] = [
     RunConfig(filters=184, blocks=6, description="aligned, above baseline"),
     RunConfig(filters=192, blocks=6, description="aligned, above baseline"),
     RunConfig(filters=224, blocks=6, description="large, aligned (top of range)"),
-    # f176 — варианты глубины
     RunConfig(filters=176, blocks=2, description="very shallow"),
     RunConfig(filters=176, blocks=4, description="shallow"),
     RunConfig(filters=176, blocks=5, description="medium-shallow"),
@@ -121,42 +110,63 @@ GROUP_A: list[RunConfig] = [
 ]
 
 # =============================================================================
-# Группа B — 21 новая архитектура, плотная сетка в «быстрой зоне».
-# Гипотеза: Парето-оптимальные модели для ESP32-S3 лежат при filters ≤ 128.
-# Для каждой архитектуры обучаем FP32 с нуля + PTQ + QAT.
+# Группа B — плотная сетка в «быстрой зоне» (20)
 # =============================================================================
 GROUP_B: list[RunConfig] = [
-    # filters=32, тiny
     RunConfig(filters=32, blocks=4, description="tiny depth=4"),
     RunConfig(filters=32, blocks=5, description="tiny depth=5"),
     RunConfig(filters=32, blocks=6, description="tiny depth=6"),
-    # filters=48, xs
     RunConfig(filters=48, blocks=4, description="xs depth=4"),
     RunConfig(filters=48, blocks=5, description="xs depth=5"),
     RunConfig(filters=48, blocks=6, description="xs depth=6"),
-    # filters=64, s (b6 в group A)
     RunConfig(filters=64, blocks=3, description="s depth=3"),
     RunConfig(filters=64, blocks=4, description="s depth=4"),
     RunConfig(filters=64, blocks=5, description="s depth=5"),
-    # filters=80, s-mid
     RunConfig(filters=80, blocks=4, description="s-mid depth=4"),
     RunConfig(filters=80, blocks=5, description="s-mid depth=5"),
     RunConfig(filters=80, blocks=6, description="s-mid depth=6"),
-    # filters=96, mid (b6 в group A)
     RunConfig(filters=96, blocks=3, description="mid depth=3"),
     RunConfig(filters=96, blocks=4, description="mid depth=4"),
     RunConfig(filters=96, blocks=5, description="mid depth=5"),
-    # filters=112, mid-l
     RunConfig(filters=112, blocks=4, description="mid-l depth=4"),
     RunConfig(filters=112, blocks=5, description="mid-l depth=5"),
     RunConfig(filters=112, blocks=6, description="mid-l depth=6"),
-    # filters=128, l (b6 в group A)
     RunConfig(filters=128, blocks=4, description="l depth=4"),
     RunConfig(filters=128, blocks=5, description="l depth=5"),
 ]
 
+# =============================================================================
+# Группа C — закрытие дыр (13)
+#
+# Зачем каждая:
+#   f16/f24       — «нижняя граница» точности (модель ломается ниже 90%).
+#   f64 b7/b8     — расширение глубины для маленькой ширины.
+#   f128 b3/b7/b8 — вторая серия по глубине параллельно f176.
+#   f160/192/224 b4/b8 — крупные filters с разной глубиной, заполняют
+#                  верхний правый угол Парето.
+# =============================================================================
+GROUP_C: list[RunConfig] = [
+    # «Нижняя граница»
+    RunConfig(filters=16, blocks=4, description="ultra-tiny depth=4"),
+    RunConfig(filters=16, blocks=6, description="ultra-tiny depth=6"),
+    RunConfig(filters=24, blocks=5, description="ultra-xs depth=5"),
+    # f64 — расширение глубины
+    RunConfig(filters=64, blocks=7, description="s deep"),
+    RunConfig(filters=64, blocks=8, description="s very deep"),
+    # f128 — вторая серия по глубине
+    RunConfig(filters=128, blocks=3, description="l depth=3"),
+    RunConfig(filters=128, blocks=7, description="l deep"),
+    RunConfig(filters=128, blocks=8, description="l very deep"),
+    # Крупные filters с разной глубиной
+    RunConfig(filters=160, blocks=4, description="xl-mid shallow"),
+    RunConfig(filters=192, blocks=4, description="xl shallow"),
+    RunConfig(filters=192, blocks=8, description="xl very deep"),
+    RunConfig(filters=224, blocks=4, description="xxl shallow"),
+    RunConfig(filters=224, blocks=8, description="xxl very deep"),
+]
+
 # Объединение с дедупликацией по slug.
-_all_with_duplicates = GROUP_A + GROUP_B
+_all_with_duplicates = GROUP_A + GROUP_B + GROUP_C
 _seen: set[str] = set()
 ALL_RUNS: list[RunConfig] = []
 for r in _all_with_duplicates:
@@ -166,12 +176,14 @@ for r in _all_with_duplicates:
 
 
 def selected_runs() -> list[RunConfig]:
-    """Runs выбранные по KWS_GROUP (A, B, или оба если переменная не задана)."""
+    """Runs выбранные по KWS_GROUP."""
     group = os.environ.get("KWS_GROUP", "").upper().strip()
     if group == "A":
         return GROUP_A
     if group == "B":
         return GROUP_B
+    if group == "C":
+        return GROUP_C
     return ALL_RUNS
 
 
