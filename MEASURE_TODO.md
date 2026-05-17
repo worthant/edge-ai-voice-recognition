@@ -71,10 +71,10 @@
 
 ## Группа B — PTQ vs QAT (4 модели)
 
-- [ ] **f96_b6_ptq**
-  - [ ] `measurements/profile/profile_f96_b6_ptq.csv`
-  - [ ] `measurements/energy/energy_f96_b6_ptq.csv`
-  - [ ] `measurements/stats/stats_f96_b6_ptq.csv`
+- [x] **f96_b6_ptq**
+  - [x] `measurements/profile/profile_f96_b6_ptq.csv`
+  - [x] `measurements/energy/energy_f96_b6_ptq.csv`
+  - [x] `measurements/stats/stats_f96_b6_ptq.csv`
 
 - [ ] **f172_b6_ptq**
   - [ ] `measurements/profile/profile_f172_b6_ptq.csv`
