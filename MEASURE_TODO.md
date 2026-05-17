@@ -42,10 +42,10 @@
   - [ ] `measurements/energy/energy_f168_b6_qat.csv`
   - [ ] `measurements/stats/stats_f168_b6_qat.csv`
 
-- [ ] **f172_b6_qat** ← baseline, НЕ aligned
-  - [ ] `measurements/profile/profile_f172_b6_qat.csv`
-  - [ ] `measurements/energy/energy_f172_b6_qat.csv`
-  - [ ] `measurements/stats/stats_f172_b6_qat.csv`
+- [x] **f172_b6_qat** ← baseline, НЕ aligned
+  - [x] `measurements/profile/profile_f172_b6_qat.csv`
+  - [x] `measurements/energy/energy_f172_b6_qat.csv`
+  - [x] `measurements/stats/stats_f172_b6_qat.csv`
 
 - [x] **f176_b6_qat**
   - [x] `measurements/profile/profile_f176_b6_qat.csv`
