@@ -1,18 +1,24 @@
 """
-QAT для заданного RunConfig.
+QAT квантизация для архитектуры.
 
-Структура совпадает с прежним quantize_qat.py — BN folding → tfmot →
-fine-tune → tflite. Все артефакты пишутся в runs/<slug>/.
+ВАЖНО: фикс бага tfmot «to_quantize can only either be a Sequential
+or Functional model» на TF 2.19 — установить TF_USE_LEGACY_KERAS=1
+ДО импорта tf. Это работает только при запуске файла как процесса
+(python -m quantize_qat). Если файл импортирован из уже запущенного
+python, где TF уже загружен — фикс не сработает. Поэтому train_all
+запускает квантизации через subprocess.
 
-Запуск:
-    python -m quantize_qat --slug f176_b6_qat
+Артефакты:
+  runs/<slug>/model_qat_int8.tflite
+  runs/<slug>/cm_qat.png
+  runs/<slug>/qat.csv
 """
 
 from __future__ import annotations
 
 import os
 
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
+os.environ["TF_USE_LEGACY_KERAS"] = "1"  # ДО import tf
 
 import argparse
 import sys
@@ -24,7 +30,6 @@ import tensorflow_model_optimization as tfmot
 
 import config
 from runs import RunConfig, find_run
-from train import save_meta
 from data.dataset import build_dataset_cached
 from utils.metrics import (
     accuracy_pct,
@@ -33,34 +38,35 @@ from utils.metrics import (
 )
 
 
-def _build_folded_model(run: RunConfig) -> tf.keras.Model:
-    """
-    Строит DS-CNN с BatchNorm-folded весами для данного RunConfig.
+def _find_fp32_weights(run: RunConfig) -> Path:
+    """Свой путь -> legacy _qat -> legacy _ptq."""
+    candidates = [
+        run.fp32_keras_path,
+        run.legacy_qat_dir / "ds_cnn_fp32.keras",
+        run.legacy_ptq_dir / "ds_cnn_fp32.keras",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    print(f"[qat] ERROR: no FP32 weights for {run.slug}", file=sys.stderr)
+    print(f"[qat] searched: {[str(c) for c in candidates]}", file=sys.stderr)
+    sys.exit(1)
 
-    BN folding (как в прежнем коде):
-      new_weight = weight * gamma / sqrt(var + eps)
-      new_bias   = beta - gamma * mean / sqrt(var + eps)
-    """
+
+def _build_folded_model(run: RunConfig) -> tf.keras.Model:
+    """DS-CNN с BN-folded весами."""
     from models.ds_cnn import _regularizer, build_ds_cnn
 
     cfg = run.ds_cnn_config
 
-    # Загружаем оригинальную модель с весами
     orig = build_ds_cnn(cfg=cfg)
-    if not run.fp32_keras_path.exists():
-        print(f"[qat] ERROR: no FP32 model at {run.fp32_keras_path}", file=sys.stderr)
-        print(
-            f"[qat] hint: run `python -m train --slug {run.slug}` first",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    orig.load_weights(str(run.fp32_keras_path))
+    weights_path = _find_fp32_weights(run)
+    orig.load_weights(str(weights_path))
+    print(f"[qat] loaded FP32 weights from {weights_path}")
 
-    # Sanity check
     x_test = np.random.randn(1, 49, 10, 1).astype(np.float32)
     orig_out = orig(x_test, training=False).numpy()
     assert not np.any(np.isnan(orig_out)), "Original model has NaN!"
-    print(f"[qat] original output sample: {orig_out[0, :3]}")
 
     def fold_bn(conv_layer, bn_layer):
         gamma, beta, moving_mean, moving_var = bn_layer.get_weights()
@@ -74,11 +80,9 @@ def _build_folded_model(run: RunConfig) -> tf.keras.Model:
         new_bias = beta - moving_mean * scale
         return new_kernel.astype(np.float32), new_bias.astype(np.float32)
 
-    # Build new model without BN
     reg = _regularizer()
     inputs = tf.keras.Input(shape=config.INPUT_SHAPE, name="mfcc_input")
 
-    stem_k, stem_b = fold_bn(orig.get_layer("stem_conv"), orig.get_layer("stem_bn"))
     x = tf.keras.layers.Conv2D(
         filters=cfg["first_conv_filters"],
         kernel_size=cfg["first_conv_kernel"],
@@ -121,7 +125,7 @@ def _build_folded_model(run: RunConfig) -> tf.keras.Model:
     )(x)
     folded = tf.keras.Model(inputs, outputs, name=f"ds_cnn_folded_{run.slug}")
 
-    # Загружаем folded веса
+    stem_k, stem_b = fold_bn(orig.get_layer("stem_conv"), orig.get_layer("stem_bn"))
     folded.get_layer("stem_conv").set_weights([stem_k, stem_b])
     for i in range(cfg["num_ds_blocks"]):
         blk = i + 1
@@ -140,7 +144,7 @@ def _build_folded_model(run: RunConfig) -> tf.keras.Model:
     folded.get_layer("logits").set_weights(orig.get_layer("logits").get_weights())
 
     folded_out = folded(x_test, training=False).numpy()
-    diff = np.max(np.abs(orig_out - folded_out))
+    diff = float(np.max(np.abs(orig_out - folded_out)))
     print(f"[qat] folded max diff vs original: {diff:.6f}")
     if diff > 0.1:
         print(f"[qat] WARNING: folding error too large ({diff:.4f})")
@@ -180,16 +184,15 @@ def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def quantize_qat(run: RunConfig) -> dict:
-    assert run.quant == "qat", f"quantize_qat called on non-QAT run {run.slug}"
     run.run_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n{'='*70}")
+    print(f"\n{'-' * 70}")
     print(f"[qat] === {run.slug} ===")
-    print(f"{'='*70}\n")
+    print(f"{'-' * 70}")
 
     folded_model = _build_folded_model(run)
 
-    print("\n[qat] === QUANTIZE MODEL ===")
+    print("[qat] wrapping with tfmot.quantize_model...")
     qat_model = tfmot.quantization.keras.quantize_model(folded_model)
     qat_model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=config.QAT_LEARNING_RATE),
@@ -202,7 +205,7 @@ def quantize_qat(run: RunConfig) -> dict:
     train_ds = build_dataset_cached("train", config.QAT_BATCH_SIZE, training=True)
     val_ds = build_dataset_cached("val", config.QAT_BATCH_SIZE, training=False)
 
-    print(f"\n[qat] === FINE-TUNE {config.QAT_EPOCHS} epochs ===")
+    print(f"[qat] fine-tune {config.QAT_EPOCHS} epochs...")
     qat_model.fit(
         train_ds,
         validation_data=val_ds,
@@ -213,7 +216,7 @@ def quantize_qat(run: RunConfig) -> dict:
         verbose=2,
     )
 
-    print("\n[qat] === CONVERT TO TFLITE INT8 ===")
+    print("[qat] converting to INT8 TFLite...")
     converter = tf.lite.TFLiteConverter.from_keras_model(qat_model)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     converter.representative_dataset = _representative_dataset_gen
@@ -221,25 +224,25 @@ def quantize_qat(run: RunConfig) -> dict:
     converter.inference_input_type = tf.int8
     converter.inference_output_type = tf.int8
     tflite = converter.convert()
-    run.tflite_path.write_bytes(tflite)
+    run.qat_tflite_path.write_bytes(tflite)
     size_kb = len(tflite) / 1024.0
-    print(f"[qat] saved: {run.tflite_path} ({size_kb:.1f} KB)")
+    print(f"[qat] saved: {run.qat_tflite_path} ({size_kb:.1f} KB)")
 
-    y_true, y_pred = _eval_tflite(run.tflite_path)
-    qat_acc = accuracy_pct(y_true, y_pred)
-    print(f"[qat] QAT INT8 accuracy: {qat_acc:.2f} %")
+    y_true, y_pred = _eval_tflite(run.qat_tflite_path)
+    acc = accuracy_pct(y_true, y_pred)
+    print(f"[qat] QAT INT8 accuracy: {acc:.2f} %")
     print_classification_report(y_true, y_pred)
 
     plot_confusion_matrix(
         y_true,
         y_pred,
         out_path=run.run_dir / "cm_qat.png",
-        title=f"{run.slug} QAT INT8 — test acc {qat_acc:.2f}%",
+        title=f"{run.slug} QAT INT8 — test acc {acc:.2f}%",
     )
 
     return {
-        "int8_acc_pct": float(qat_acc),
-        "int8_size_kb": float(size_kb),
+        "qat_acc_pct": float(acc),
+        "qat_size_kb": float(size_kb),
     }
 
 
@@ -248,8 +251,11 @@ def main() -> None:
     ap.add_argument("--slug", required=True)
     args = ap.parse_args()
     run = find_run(args.slug)
-    meta_update = quantize_qat(run)
-    save_meta(run, meta_update)
+
+    from train import save_meta
+
+    update = quantize_qat(run)
+    save_meta(run, update)
 
 
 if __name__ == "__main__":

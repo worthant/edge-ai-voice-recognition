@@ -1,11 +1,14 @@
 """
-PTQ для заданного RunConfig.
+PTQ квантизация для архитектуры.
 
-Загружает FP32-чекпойнт из runs/<slug>/, выполняет полную INT8
-квантизацию, сохраняет .tflite и обновляет meta.json.
+Принимает RunConfig (это теперь одна архитектура без quant-метки),
+грузит FP32-веса из run.fp32_keras_path или legacy папки, делает
+полную INT8 PTQ-квантизацию через TFLiteConverter,
+оценивает на тестовой выборке, возвращает метрики.
 
-Запуск:
-    python -m quantize_ptq --slug f172_b6_ptq
+Артефакты:
+  runs/<slug>/model_ptq_int8.tflite  — финальная INT8 модель
+  runs/<slug>/cm_ptq.png             — матрица ошибок INT8
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ import tensorflow as tf
 
 import config
 from runs import RunConfig, find_run
-from train import save_meta
 from data.dataset import build_dataset_cached
 from utils.metrics import (
     accuracy_pct,
@@ -28,43 +30,30 @@ from utils.metrics import (
 )
 
 
-def _load_fp32_model(run: RunConfig) -> tf.keras.Model:
-    """
-    Загружает FP32 модель: пересобирает архитектуру из RunConfig + грузит веса.
-    Обходит баг десериализации .keras на TF 2.19.
+def _find_fp32_weights(run: RunConfig) -> Path:
+    """Ищет FP32 веса: свой путь -> legacy _qat папка -> legacy _ptq."""
+    candidates = [
+        run.fp32_keras_path,
+        run.legacy_qat_dir / "ds_cnn_fp32.keras",
+        run.legacy_ptq_dir / "ds_cnn_fp32.keras",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    print(f"[ptq] ERROR: no FP32 weights for {run.slug}", file=sys.stderr)
+    print(f"[ptq] searched: {[str(c) for c in candidates]}", file=sys.stderr)
+    sys.exit(1)
 
-    ПРИМЕЧАНИЕ: PTQ модель может НЕ ИМЕТЬ собственного FP32-чекпойнта (slug
-    оканчивается на _ptq). В этом случае используем FP32 от парной QAT
-    модели с тем же filters/blocks.
-    """
+
+def _load_fp32_model(run: RunConfig) -> tf.keras.Model:
+    """Пересобирает архитектуру + грузит веса (обход бага десериализации)."""
     from models.ds_cnn import build_ds_cnn
 
     model = build_ds_cnn(cfg=run.ds_cnn_config)
-
-    # Источники весов по приоритету: свой → парная QAT → старый legacy
-    candidates: list[Path] = [run.fp32_keras_path]
-    if run.quant == "ptq":
-        # Парная QAT модель того же размера
-        qat_slug = f"f{run.filters}_b{run.blocks}_qat"
-        try:
-            qat_run = find_run(qat_slug)
-            candidates.append(qat_run.fp32_keras_path)
-        except ValueError:
-            pass
-
-    for src in candidates:
-        if src.exists():
-            model.load_weights(str(src))
-            print(f"[ptq] loaded weights from {src}")
-            return model
-
-    print(f"[ptq] ERROR: no FP32 weights found for {run.slug}", file=sys.stderr)
-    print(f"[ptq] searched: {[str(c) for c in candidates]}", file=sys.stderr)
-    print(
-        f"[ptq] hint: run `python -m train --slug f{run.filters}_b{run.blocks}_qat` first",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    weights_path = _find_fp32_weights(run)
+    model.load_weights(str(weights_path))
+    print(f"[ptq] loaded FP32 weights from {weights_path}")
+    return model
 
 
 def _representative_dataset_gen():
@@ -78,6 +67,7 @@ def _representative_dataset_gen():
 
 
 def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Прогон INT8-модели на тестовой выборке."""
     interp = tf.lite.Interpreter(model_path=str(tflite_path))
     interp.allocate_tensors()
     in_det = interp.get_input_details()[0]
@@ -99,12 +89,12 @@ def _eval_tflite(tflite_path: Path) -> tuple[np.ndarray, np.ndarray]:
 
 
 def quantize_ptq(run: RunConfig) -> dict:
-    assert run.quant == "ptq", f"quantize_ptq called on non-PTQ run {run.slug}"
+    """Возвращает метрики PTQ для архитектуры: int8_acc, size, и т.д."""
     run.run_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n{'='*70}")
+    print(f"\n{'-' * 70}")
     print(f"[ptq] === {run.slug} ===")
-    print(f"{'='*70}\n")
+    print(f"{'-' * 70}")
 
     model = _load_fp32_model(run)
 
@@ -117,25 +107,25 @@ def quantize_ptq(run: RunConfig) -> dict:
     converter.inference_output_type = tf.int8
     tflite_model = converter.convert()
 
-    run.tflite_path.write_bytes(tflite_model)
+    run.ptq_tflite_path.write_bytes(tflite_model)
     size_kb = len(tflite_model) / 1024.0
-    print(f"[ptq] saved: {run.tflite_path} ({size_kb:.1f} KB)")
+    print(f"[ptq] saved: {run.ptq_tflite_path} ({size_kb:.1f} KB)")
 
-    y_true, y_pred = _eval_tflite(run.tflite_path)
-    ptq_acc = accuracy_pct(y_true, y_pred)
-    print(f"[ptq] PTQ INT8 accuracy: {ptq_acc:.2f} %")
+    y_true, y_pred = _eval_tflite(run.ptq_tflite_path)
+    acc = accuracy_pct(y_true, y_pred)
+    print(f"[ptq] PTQ INT8 accuracy: {acc:.2f} %")
     print_classification_report(y_true, y_pred)
 
     plot_confusion_matrix(
         y_true,
         y_pred,
         out_path=run.run_dir / "cm_ptq.png",
-        title=f"{run.slug} PTQ INT8 — test acc {ptq_acc:.2f}%",
+        title=f"{run.slug} PTQ INT8 — test acc {acc:.2f}%",
     )
 
     return {
-        "int8_acc_pct": float(ptq_acc),
-        "int8_size_kb": float(size_kb),
+        "ptq_acc_pct": float(acc),
+        "ptq_size_kb": float(size_kb),
     }
 
 
@@ -144,8 +134,12 @@ def main() -> None:
     ap.add_argument("--slug", required=True)
     args = ap.parse_args()
     run = find_run(args.slug)
-    meta_update = quantize_ptq(run)
-    save_meta(run, meta_update)
+
+    # Импорт save_meta из train (он же сольёт PTQ-метрики с уже существующими)
+    from train import save_meta
+
+    update = quantize_ptq(run)
+    save_meta(run, update)
 
 
 if __name__ == "__main__":
