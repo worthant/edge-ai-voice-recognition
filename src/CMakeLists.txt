@@ -7,7 +7,7 @@ else()
 endif()
 
 # Path to model artefacts produced by `python -m export_to_c --slug <MODEL_SLUG>`
-set(MODEL_RUN_DIR "${CMAKE_SOURCE_DIR}/nn/results/runs/${MODEL_SLUG}")
+set(MODEL_RUN_DIR "${CMAKE_SOURCE_DIR}/nn/results/kws_results_19_models/runs/${MODEL_SLUG}")
 
 if(NOT EXISTS "${MODEL_RUN_DIR}/model_data.c")
     message(WARNING "Model not exported: ${MODEL_RUN_DIR}/model_data.c not found.")
