@@ -12,4 +12,11 @@ nn/results/*
 !nn/results/kws_results.zip
 !nn/results/kws_results_old_1_model.zip
 !nn/results/kws_results_19_models.zip
+!nn/results/runs-group-a.zip
+!nn/results/runs-group-b.zip
+!nn/results/runs-group-c.zip
+!nn/results/runs-group-d.zip
+!nn/results/all_models_final.csv
+!nn/results/all_models_a-d_groups.csv
+!nn/results/merge_csvs.py
 *logs
