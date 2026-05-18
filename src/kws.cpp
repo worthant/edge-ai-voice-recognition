@@ -9,8 +9,10 @@
 #include "kws.h"
 #include "model_data.h" /* g_model_data, g_model_data_size from export_to_c.py */
 
+#include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "esp_spiffs.h"
 #include "esp_timer.h"
 #include "kws_profiler.h"
@@ -52,6 +54,10 @@ static const char *label_names[KWS_NUM_CLASSES] = {
 extern "C" {
 
 esp_err_t kws_init(void) {
+    ESP_LOGI(TAG, "build sanity: icache=%d kB dcache=%d kB",
+             CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE / 1024,
+             CONFIG_ESP32S3_DATA_CACHE_SIZE / 1024);
+
     /* 1. Load model flatbuffer */
     model = tflite::GetModel(g_model_data);
     if (model->version() != TFLITE_SCHEMA_VERSION) {
@@ -116,6 +122,7 @@ esp_err_t kws_init(void) {
              (int)output_tensor->type, (int)output_tensor->dims->data[0],
              (int)output_tensor->dims->data[1], output_tensor->params.scale,
              (int)output_tensor->params.zero_point);
+    ESP_LOGI(TAG, "model size: %u bytes", g_model_data_size);
 
     return ESP_OK;
 }
@@ -142,16 +149,26 @@ esp_err_t kws_classify(const float mfcc[MFCC_NUM_FRAMES][MFCC_NUM_COEFFS],
         }
     }
 
-    /* Invoke */
-    int64_t t0 = esp_timer_get_time();
-    TfLiteStatus status = interpreter->Invoke();
-    int64_t dt = esp_timer_get_time() - t0;
-
-    if (status != kTfLiteOk) {
-        ESP_LOGE(TAG, "Invoke failed");
-        return ESP_FAIL;
+    ESP_LOGI(TAG, "tensor diagnostics:");
+    for (size_t i = 0; i < interpreter->inputs_size(); i++) {
+        TfLiteTensor *t = interpreter->input(i);
+        ESP_LOGI(TAG, "  input[%zu]: data=%p bytes=%zu (internal=%d psram=%d)",
+                 i, t->data.raw, t->bytes, esp_ptr_internal(t->data.raw),
+                 esp_ptr_external_ram(t->data.raw));
     }
-    ESP_LOGI(TAG, "invoke: %lld us", (long long)dt);
+    ESP_LOGI(TAG, "  arena: %p (internal=%d psram=%d)", tensor_arena,
+             esp_ptr_internal(tensor_arena),
+             esp_ptr_external_ram(tensor_arena));
+    ESP_LOGI(TAG, "  model_data: %p (internal=%d psram=%d flash=%d)",
+             g_model_data, esp_ptr_internal(g_model_data),
+             esp_ptr_external_ram(g_model_data), esp_ptr_in_drom(g_model_data));
+
+    /* Invoke */
+    uint32_t start = esp_cpu_get_cycle_count();
+    interpreter->Invoke();
+    uint32_t end = esp_cpu_get_cycle_count();
+    ESP_LOGI(TAG, "invoke cycles: %u (%.1f ms @ 240 MHz)",
+             (unsigned)(end - start), (end - start) / 240000.0f);
 
     /* Dequantize output → find argmax */
     float out_scale = output_tensor->params.scale;

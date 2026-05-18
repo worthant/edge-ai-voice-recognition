@@ -1,13 +1,13 @@
 # Pick the trained model based on MODEL_SLUG_BUILD (from platformio.ini).
-# Falls back to f172_b6_qat if not set.
+# Slug must end with _qat or _ptq.
 if(NOT DEFINED ENV{PLATFORMIO_MODEL_SLUG})
-    set(MODEL_SLUG "f172_b6_qat")
+    set(MODEL_SLUG "f176_b2_qat")
 else()
     set(MODEL_SLUG $ENV{PLATFORMIO_MODEL_SLUG})
 endif()
 
 # Path to model artefacts produced by `python -m export_to_c --slug <MODEL_SLUG>`
-set(MODEL_RUN_DIR "${CMAKE_SOURCE_DIR}/nn/results/kws_results_19_models/runs/${MODEL_SLUG}")
+set(MODEL_RUN_DIR "${CMAKE_SOURCE_DIR}/nn/results/merged_runs/${MODEL_SLUG}")
 
 if(NOT EXISTS "${MODEL_RUN_DIR}/model_data.c")
     message(WARNING "Model not exported: ${MODEL_RUN_DIR}/model_data.c not found.")
@@ -22,6 +22,7 @@ set(
   esp_hw_support
   esp-dsp
   spiffs
+  esp-tflite-micro
 )
 
 # All sources in src/, plus model_data from selected run
