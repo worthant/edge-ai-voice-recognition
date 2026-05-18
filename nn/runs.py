@@ -203,8 +203,110 @@ GROUP_LAST2: list[RunConfig] = [
     RunConfig(filters=128, blocks=5, description="l depth=5"),
 ]
 
+GROUP_PATCH_1: list[RunConfig] = [
+    RunConfig(filters=16, blocks=3, description="patch f16 b3"),
+    RunConfig(filters=24, blocks=3, description="patch f24 b3"),
+    RunConfig(filters=24, blocks=7, description="patch f24 b7"),
+    RunConfig(filters=32, blocks=3, description="patch f32 b3"),
+    RunConfig(filters=32, blocks=8, description="patch f32 b8"),
+    RunConfig(filters=48, blocks=7, description="patch f48 b7"),
+    RunConfig(filters=56, blocks=2, description="patch f56 b2"),
+    RunConfig(filters=56, blocks=8, description="patch f56 b8"),
+    RunConfig(filters=80, blocks=2, description="patch f80 b2"),
+    RunConfig(filters=104, blocks=2, description="patch f104 b2"),
+    RunConfig(filters=104, blocks=8, description="patch f104 b8"),
+    RunConfig(filters=112, blocks=3, description="patch f112 b3"),
+    RunConfig(filters=160, blocks=2, description="patch f160 b2"),
+    RunConfig(filters=160, blocks=7, description="patch f160 b7"),
+    RunConfig(filters=172, blocks=7, description="patch f172 b7"),
+    RunConfig(filters=184, blocks=4, description="patch f184 b4"),
+    RunConfig(filters=192, blocks=2, description="patch f192 b2"),
+    RunConfig(filters=224, blocks=2, description="patch f224 b2"),
+    RunConfig(filters=224, blocks=3, description="patch f224 b3"),
+    RunConfig(filters=224, blocks=7, description="patch f224 b7"),
+]
+
+GROUP_PATCH_2: list[RunConfig] = [
+    RunConfig(filters=16, blocks=5, description="patch f16 b5"),
+    RunConfig(filters=16, blocks=8, description="patch f16 b8"),
+    RunConfig(filters=24, blocks=6, description="patch f24 b6"),
+    RunConfig(filters=40, blocks=3, description="patch f40 b3"),
+    RunConfig(filters=40, blocks=7, description="patch f40 b7"),
+    RunConfig(filters=64, blocks=2, description="patch f64 b2"),
+    RunConfig(filters=72, blocks=3, description="patch f72 b3"),
+    RunConfig(filters=72, blocks=7, description="patch f72 b7"),
+    RunConfig(filters=80, blocks=3, description="patch f80 b3"),
+    RunConfig(filters=88, blocks=8, description="patch f88 b8"),
+    RunConfig(filters=96, blocks=7, description="patch f96 b7"),
+    RunConfig(filters=112, blocks=2, description="patch f112 b2"),
+    RunConfig(filters=168, blocks=4, description="patch f168 b4"),
+    RunConfig(filters=168, blocks=8, description="patch f168 b8"),
+    RunConfig(filters=176, blocks=3, description="patch f176 b3"),
+    RunConfig(filters=184, blocks=3, description="patch f184 b3"),
+    RunConfig(filters=184, blocks=5, description="patch f184 b5"),
+    RunConfig(filters=184, blocks=8, description="patch f184 b8"),
+    RunConfig(filters=192, blocks=5, description="patch f192 b5"),
+]
+
+GROUP_PATCH_3: list[RunConfig] = [
+    RunConfig(filters=24, blocks=2, description="patch f24 b2"),
+    RunConfig(filters=24, blocks=4, description="patch f24 b4"),
+    RunConfig(filters=32, blocks=2, description="patch f32 b2"),
+    RunConfig(filters=48, blocks=2, description="patch f48 b2"),
+    RunConfig(filters=48, blocks=3, description="patch f48 b3"),
+    RunConfig(filters=48, blocks=8, description="patch f48 b8"),
+    RunConfig(filters=72, blocks=2, description="patch f72 b2"),
+    RunConfig(filters=80, blocks=7, description="patch f80 b7"),
+    RunConfig(filters=88, blocks=2, description="patch f88 b2"),
+    RunConfig(filters=88, blocks=3, description="patch f88 b3"),
+    RunConfig(filters=88, blocks=7, description="patch f88 b7"),
+    RunConfig(filters=104, blocks=7, description="patch f104 b7"),
+    RunConfig(filters=128, blocks=2, description="patch f128 b2"),
+    RunConfig(filters=160, blocks=3, description="patch f160 b3"),
+    RunConfig(filters=168, blocks=7, description="patch f168 b7"),
+    RunConfig(filters=172, blocks=4, description="patch f172 b4"),
+    RunConfig(filters=172, blocks=5, description="patch f172 b5"),
+    RunConfig(filters=172, blocks=8, description="patch f172 b8"),
+    RunConfig(filters=192, blocks=3, description="patch f192 b3"),
+    RunConfig(filters=192, blocks=7, description="patch f192 b7"),
+]
+
+GROUP_PATCH_4: list[RunConfig] = [
+    RunConfig(filters=16, blocks=2, description="patch f16 b2"),
+    RunConfig(filters=16, blocks=7, description="patch f16 b7"),
+    RunConfig(filters=24, blocks=8, description="patch f24 b8"),
+    RunConfig(filters=32, blocks=7, description="patch f32 b7"),
+    RunConfig(filters=40, blocks=2, description="patch f40 b2"),
+    RunConfig(filters=40, blocks=8, description="patch f40 b8"),
+    RunConfig(filters=56, blocks=3, description="patch f56 b3"),
+    RunConfig(filters=56, blocks=7, description="patch f56 b7"),
+    RunConfig(filters=72, blocks=8, description="patch f72 b8"),
+    RunConfig(filters=80, blocks=8, description="patch f80 b8"),
+    RunConfig(filters=96, blocks=2, description="patch f96 b2"),
+    RunConfig(filters=96, blocks=8, description="patch f96 b8"),
+    RunConfig(filters=104, blocks=3, description="patch f104 b3"),
+    RunConfig(filters=112, blocks=7, description="patch f112 b7"),
+    RunConfig(filters=112, blocks=8, description="patch f112 b8"),
+    RunConfig(filters=160, blocks=5, description="patch f160 b5"),
+    RunConfig(filters=160, blocks=8, description="patch f160 b8"),
+    RunConfig(filters=168, blocks=5, description="patch f168 b5"),
+    RunConfig(filters=184, blocks=7, description="patch f184 b7"),
+    RunConfig(filters=224, blocks=5, description="patch f224 b5"),
+]
+
 # Объединение с дедупликацией по slug.
-_all_with_duplicates = GROUP_A + GROUP_B + GROUP_C + GROUP_D + GROUP_LAST1 + GROUP_LAST2
+_all_with_duplicates = (
+    GROUP_A
+    + GROUP_B
+    + GROUP_C
+    + GROUP_D
+    + GROUP_LAST1
+    + GROUP_LAST2
+    + GROUP_PATCH_1
+    + GROUP_PATCH_2
+    + GROUP_PATCH_3
+    + GROUP_PATCH_4
+)
 _seen: set[str] = set()
 ALL_RUNS: list[RunConfig] = []
 for r in _all_with_duplicates:
@@ -228,6 +330,14 @@ def selected_runs() -> list[RunConfig]:
         return GROUP_LAST1
     if group == "LAST_2":
         return GROUP_LAST2
+    if group == "PATCH_1":
+        return GROUP_PATCH_1
+    if group == "PATCH_2":
+        return GROUP_PATCH_2
+    if group == "PATCH_3":
+        return GROUP_PATCH_3
+    if group == "PATCH_4":
+        return GROUP_PATCH_4
     return ALL_RUNS
 
 

@@ -40,7 +40,7 @@ def _is_arch_complete(run: RunConfig) -> bool:
     return (
         run.fp32_keras_path.exists()
         and run.ptq_tflite_path.exists()
-        and run.qat_tflite_path.exists()
+        # and run.qat_tflite_path.exists()
         and run.meta_path.exists()
     )
 
@@ -115,15 +115,15 @@ def _train_one(run: RunConfig, force: bool, skip_fp32: bool) -> dict:
         print(f"[batch] {run.slug}: PTQ already exists, skipping")
 
     # QAT в subprocess (фикс TF_USE_LEGACY_KERAS=1 работает только так)
-    if force or not run.qat_tflite_path.exists():
-        print(f"\n[batch] {run.slug}: launching QAT subprocess...")
-        if _run_subprocess("quantize_qat", run.slug) and run.qat_tflite_path.exists():
-            counters["qat"] = 1
-        else:
-            print(f"[batch] FAILED QAT {run.slug}", file=sys.stderr)
-            counters["errors"] += 1
-    else:
-        print(f"[batch] {run.slug}: QAT already exists, skipping")
+    # if force or not run.qat_tflite_path.exists():
+    #     print(f"\n[batch] {run.slug}: launching QAT subprocess...")
+    #     if _run_subprocess("quantize_qat", run.slug) and run.qat_tflite_path.exists():
+    #         counters["qat"] = 1
+    #     else:
+    #         print(f"[batch] FAILED QAT {run.slug}", file=sys.stderr)
+    #         counters["errors"] += 1
+    # else:
+    #     print(f"[batch] {run.slug}: QAT already exists, skipping")
 
     return counters
 
