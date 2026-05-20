@@ -226,19 +226,19 @@ inline void EvalQuantizedPerChannel(TfLiteContext *context, TfLiteNode *node,
             TFLITE_DCHECK_EQ(bias_shape.FlatSize(), output_depth);
         }
 
-        static int dbg_count = 0;
-        if (dbg_count < 20) {
-            ESP_LOGE("CONV_DBG",
-                     "[%d] in=%dx%dx%d filter=%dx%d out=%dx%dx%d buf_idx=%d "
-                     "in_zp=%d ch_mod8=%d",
-                     dbg_count, (int)input_width, (int)input_height,
-                     (int)input_depth, (int)filter_width, (int)filter_height,
-                     (int)output_width, (int)output_height, (int)output_depth,
-                     (int)data.buffer_idx,
-                     (int)(-data.op_data.input_zero_point),
-                     (int)(input_depth % 8));
-            dbg_count++;
-        }
+        // static int dbg_count = 0;
+        // if (dbg_count < 20) {
+        //     ESP_LOGE("CONV_DBG",
+        //              "[%d] in=%dx%dx%d filter=%dx%d out=%dx%dx%d buf_idx=%d "
+        //              "in_zp=%d ch_mod8=%d",
+        //              dbg_count, (int)input_width, (int)input_height,
+        //              (int)input_depth, (int)filter_width, (int)filter_height,
+        //              (int)output_width, (int)output_height, (int)output_depth,
+        //              (int)data.buffer_idx,
+        //              (int)(-data.op_data.input_zero_point),
+        //              (int)(input_depth % 8));
+        //     dbg_count++;
+        // }
         void *scratch_buf = NULL;
         if (data.buffer_idx > -1) {
             scratch_buf = context->GetScratchBuffer(context, data.buffer_idx);

@@ -1,7 +1,7 @@
 # Pick the trained model based on MODEL_SLUG_BUILD (from platformio.ini).
 # Slug must end with _qat or _ptq.
 if(NOT DEFINED ENV{PLATFORMIO_MODEL_SLUG})
-    set(MODEL_SLUG "f176_b2_qat")
+    set(MODEL_SLUG "f104_b5_ptq")
 else()
     set(MODEL_SLUG $ENV{PLATFORMIO_MODEL_SLUG})
 endif()
@@ -31,13 +31,10 @@ file(GLOB_RECURSE app_sources
     ${CMAKE_SOURCE_DIR}/src/*.cpp
 )
 
-# Add model_data.c from run dir if present (preferred); otherwise keep src/model_data.c
-if(EXISTS "${MODEL_RUN_DIR}/model_data.c")
-    # Exclude src/model_data.c if it exists, to avoid duplicate symbols
-    list(FILTER app_sources EXCLUDE REGEX "src/model_data\\.c$")
-    list(APPEND app_sources "${MODEL_RUN_DIR}/model_data.c")
-    message(STATUS "Using model from: ${MODEL_RUN_DIR}/model_data.c")
-endif()
+# Model data is now flashed separately into the 'model' partition.
+# We don't link model_data.c into the firmware; we only need model_data.h
+# for any forward declarations (not used at runtime — loaded via mmap).
+list(FILTER app_sources EXCLUDE REGEX "src/model_data\\.c$")
 
 idf_component_register(
     SRCS ${app_sources}

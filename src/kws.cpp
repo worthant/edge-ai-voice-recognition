@@ -7,7 +7,7 @@
  */
 
 #include "kws.h"
-#include "model_data.h" /* g_model_data, g_model_data_size from export_to_c.py */
+#include "model_loader.h"
 
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
@@ -58,8 +58,14 @@ esp_err_t kws_init(void) {
              CONFIG_ESP32S3_INSTRUCTION_CACHE_SIZE / 1024,
              CONFIG_ESP32S3_DATA_CACHE_SIZE / 1024);
 
-    /* 1. Load model flatbuffer */
-    model = tflite::GetModel(g_model_data);
+    /* 1. Load model flatbuffer from 'model' partition */
+    const void *model_ptr = NULL;
+    size_t model_size = 0;
+    if (model_loader_mmap(&model_ptr, &model_size) != ESP_OK) {
+        ESP_LOGE(TAG, "failed to mmap model partition");
+        return ESP_FAIL;
+    }
+    model = tflite::GetModel(model_ptr);
     if (model->version() != TFLITE_SCHEMA_VERSION) {
         ESP_LOGE(TAG, "model schema %lu != expected %d",
                  (unsigned long)model->version(), TFLITE_SCHEMA_VERSION);
@@ -122,7 +128,6 @@ esp_err_t kws_init(void) {
              (int)output_tensor->type, (int)output_tensor->dims->data[0],
              (int)output_tensor->dims->data[1], output_tensor->params.scale,
              (int)output_tensor->params.zero_point);
-    ESP_LOGI(TAG, "model size: %u bytes", g_model_data_size);
 
     return ESP_OK;
 }
@@ -159,9 +164,6 @@ esp_err_t kws_classify(const float mfcc[MFCC_NUM_FRAMES][MFCC_NUM_COEFFS],
     ESP_LOGI(TAG, "  arena: %p (internal=%d psram=%d)", tensor_arena,
              esp_ptr_internal(tensor_arena),
              esp_ptr_external_ram(tensor_arena));
-    ESP_LOGI(TAG, "  model_data: %p (internal=%d psram=%d flash=%d)",
-             g_model_data, esp_ptr_internal(g_model_data),
-             esp_ptr_external_ram(g_model_data), esp_ptr_in_drom(g_model_data));
 
     /* Invoke */
     uint32_t start = esp_cpu_get_cycle_count();
