@@ -1,3 +1,7 @@
+> [!WARNING]  
+> THIS IS MOSTLY OUTDATED!
+> Need to rewrite ASAP
+
 # ESP32-S3 Voice Recognition Firmware
 
 Энергоэффективная прошивка для распознавания речи на ESP32-S3 с использованием
